@@ -27,40 +27,52 @@ type Handler struct {
 
 // -- request / response types ------------------------------------------------
 
+// createVolumeRequest is the body for POST /api/v1/volumes.
+// @Description Create volume request
 type createVolumeRequest struct {
-	Name   string `json:"name"`
-	SizeMB int    `json:"size_mb"`
+	Name   string `json:"name"    example:"vol-01"`
+	SizeMB int    `json:"size_mb" example:"1024"`
 }
 
+// attachVolumeRequest is the body for PUT /api/v1/volumes/{name}/attach.
+// @Description Attach volume request
 type attachVolumeRequest struct {
-	NodeID string `json:"node_id"`
+	NodeID string `json:"node_id" example:"node-paris-01"`
 }
 
+// volumeResponse is the representation of a volume returned by the API.
+// @Description Volume resource
 type volumeResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	SizeMB    int    `json:"size_mb"`
-	State     string `json:"state"`
-	Backend   string `json:"backend"`
-	NodeID    string `json:"node_id,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID        string `json:"id"                  example:"550e8400-e29b-41d4-a716-446655440000"`
+	Name      string `json:"name"                example:"vol-01"`
+	SizeMB    int    `json:"size_mb"             example:"1024"`
+	State     string `json:"state"               example:"available"`
+	Backend   string `json:"backend"             example:"mock"`
+	NodeID    string `json:"node_id,omitempty"   example:"node-paris-01"`
+	CreatedAt string `json:"created_at"          example:"2024-01-01T00:00:00Z"`
+	UpdatedAt string `json:"updated_at"          example:"2024-01-01T00:00:00Z"`
 }
 
+// listResponse wraps a slice of volumes with a count.
+// @Description List of volumes
 type listResponse struct {
 	Volumes []*volumeResponse `json:"volumes"`
-	Count   int               `json:"count"`
+	Count   int               `json:"count" example:"1"`
 }
 
+// healthResponse is returned by GET /healthz.
+// @Description Health check response
 type healthResponse struct {
-	Status          string `json:"status"`
-	Backend         string `json:"backend"`
-	ConsistencyMode string `json:"consistency_mode"`
-	Version         string `json:"version"`
+	Status          string `json:"status"           example:"ok"`
+	Backend         string `json:"backend"          example:"mock"`
+	ConsistencyMode string `json:"consistency_mode" example:"cp"`
+	Version         string `json:"version"          example:"1.0.0"`
 }
 
+// errResponse wraps an error message.
+// @Description Error response
 type errResponse struct {
-	Error string `json:"error"`
+	Error string `json:"error" example:"volume not found"`
 }
 
 // -- helpers -----------------------------------------------------------------
@@ -103,7 +115,19 @@ func (h *Handler) recordOp(ctx context.Context, op string) {
 
 // -- handlers ----------------------------------------------------------------
 
-// POST /api/v1/volumes
+// CreateVolume godoc
+//
+//	@Summary		Create a volume
+//	@Description	Creates a new block storage volume. The volume goes through PENDING → CREATING → AVAILABLE states.
+//	@Tags			volumes
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		createVolumeRequest	true	"Volume creation parameters"
+//	@Success		201		{object}	volumeResponse
+//	@Failure		400		{object}	errResponse	"Invalid request"
+//	@Failure		409		{object}	errResponse	"Volume already exists"
+//	@Failure		500		{object}	errResponse	"Internal error"
+//	@Router			/api/v1/volumes [post]
 func (h *Handler) CreateVolume(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.CreateVolume")
 	defer span.End()
@@ -138,7 +162,15 @@ func (h *Handler) CreateVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toResponse(vol))
 }
 
-// GET /api/v1/volumes
+// ListVolumes godoc
+//
+//	@Summary		List all volumes
+//	@Description	Returns all volumes managed by the storage backend.
+//	@Tags			volumes
+//	@Produce		json
+//	@Success		200	{object}	listResponse
+//	@Failure		500	{object}	errResponse
+//	@Router			/api/v1/volumes [get]
 func (h *Handler) ListVolumes(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.ListVolumes")
 	defer span.End()
@@ -158,7 +190,17 @@ func (h *Handler) ListVolumes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// GET /api/v1/volumes/{name}
+// GetVolume godoc
+//
+//	@Summary		Get a volume
+//	@Description	Returns a single volume by name.
+//	@Tags			volumes
+//	@Produce		json
+//	@Param			name	path		string	true	"Volume name"
+//	@Success		200		{object}	volumeResponse
+//	@Failure		404		{object}	errResponse	"Volume not found"
+//	@Failure		500		{object}	errResponse
+//	@Router			/api/v1/volumes/{name} [get]
 func (h *Handler) GetVolume(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.GetVolume")
 	defer span.End()
@@ -178,7 +220,21 @@ func (h *Handler) GetVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toResponse(vol))
 }
 
-// PUT /api/v1/volumes/{name}/attach
+// AttachVolume godoc
+//
+//	@Summary		Attach a volume to a node
+//	@Description	Attaches an available volume to a compute node. Transition: AVAILABLE → ATTACHING → ATTACHED.
+//	@Tags			volumes
+//	@Accept			json
+//	@Produce		json
+//	@Param			name	path		string				true	"Volume name"
+//	@Param			body	body		attachVolumeRequest	true	"Node to attach to"
+//	@Success		200		{object}	volumeResponse
+//	@Failure		400		{object}	errResponse	"Invalid request"
+//	@Failure		404		{object}	errResponse	"Volume not found"
+//	@Failure		409		{object}	errResponse	"Invalid FSM transition"
+//	@Failure		500		{object}	errResponse
+//	@Router			/api/v1/volumes/{name}/attach [put]
 func (h *Handler) AttachVolume(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.AttachVolume")
 	defer span.End()
@@ -211,7 +267,18 @@ func (h *Handler) AttachVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toResponse(vol))
 }
 
-// PUT /api/v1/volumes/{name}/detach
+// DetachVolume godoc
+//
+//	@Summary		Detach a volume from its node
+//	@Description	Detaches an attached volume. Transition: ATTACHED → DETACHING → AVAILABLE.
+//	@Tags			volumes
+//	@Produce		json
+//	@Param			name	path		string	true	"Volume name"
+//	@Success		200		{object}	volumeResponse
+//	@Failure		404		{object}	errResponse	"Volume not found"
+//	@Failure		409		{object}	errResponse	"Invalid FSM transition"
+//	@Failure		500		{object}	errResponse
+//	@Router			/api/v1/volumes/{name}/detach [put]
 func (h *Handler) DetachVolume(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.DetachVolume")
 	defer span.End()
@@ -234,7 +301,18 @@ func (h *Handler) DetachVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toResponse(vol))
 }
 
-// DELETE /api/v1/volumes/{name}
+// DeleteVolume godoc
+//
+//	@Summary		Delete a volume
+//	@Description	Deletes an available volume. Transition: AVAILABLE → DELETING → DELETED. Returns 409 if volume is attached.
+//	@Tags			volumes
+//	@Produce		json
+//	@Param			name	path	string	true	"Volume name"
+//	@Success		204		"No content"
+//	@Failure		404		{object}	errResponse	"Volume not found"
+//	@Failure		409		{object}	errResponse	"Invalid FSM transition (e.g. volume is attached)"
+//	@Failure		500		{object}	errResponse
+//	@Router			/api/v1/volumes/{name} [delete]
 func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.DeleteVolume")
 	defer span.End()
@@ -255,7 +333,15 @@ func (h *Handler) DeleteVolume(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /healthz
+// Healthz godoc
+//
+//	@Summary		Health check
+//	@Description	Returns the health status of the API and the storage backend. Returns 503 in CP mode if the backend is degraded.
+//	@Tags			system
+//	@Produce		json
+//	@Success		200	{object}	healthResponse
+//	@Failure		503	{object}	healthResponse	"Backend degraded (CP mode)"
+//	@Router			/healthz [get]
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	ctx, span := h.tracer.Start(r.Context(), "handler.Healthz")
 	defer span.End()

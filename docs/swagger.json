@@ -1,0 +1,440 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Pluggable block storage API — Ceph, Lustre, NVMe-oF backends with FSM volume lifecycle.\nDemo project for Scaleway Senior Software Engineer application.",
+        "title": "Block Storage API",
+        "contact": {
+            "name": "Ciré LY",
+            "url": "https://github.com/cire-ly/block-storage-api",
+            "email": "cire.ly@nexonode.tech"
+        },
+        "license": {
+            "name": "MIT",
+            "url": "https://opensource.org/licenses/MIT"
+        },
+        "version": "1.0.0"
+    },
+    "host": "163.172.144.70:8080",
+    "basePath": "/",
+    "paths": {
+        "/api/v1/volumes": {
+            "get": {
+                "description": "Returns all volumes managed by the storage backend.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "List all volumes",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.listResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Creates a new block storage volume. The volume goes through PENDING → CREATING → AVAILABLE states.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Create a volume",
+                "parameters": [
+                    {
+                        "description": "Volume creation parameters",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.createVolumeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.volumeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Volume already exists",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/volumes/{name}": {
+            "get": {
+                "description": "Returns a single volume by name.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Get a volume",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Volume name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.volumeResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Volume not found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Deletes an available volume. Transition: AVAILABLE → DELETING → DELETED. Returns 409 if volume is attached.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Delete a volume",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Volume name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No content"
+                    },
+                    "404": {
+                        "description": "Volume not found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Invalid FSM transition (e.g. volume is attached)",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/volumes/{name}/attach": {
+            "put": {
+                "description": "Attaches an available volume to a compute node. Transition: AVAILABLE → ATTACHING → ATTACHED.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Attach a volume to a node",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Volume name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Node to attach to",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.attachVolumeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.volumeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Volume not found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Invalid FSM transition",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/volumes/{name}/detach": {
+            "put": {
+                "description": "Detaches an attached volume. Transition: ATTACHED → DETACHING → AVAILABLE.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Detach a volume from its node",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Volume name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.volumeResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Volume not found",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Invalid FSM transition",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.errResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/healthz": {
+            "get": {
+                "description": "Returns the health status of the API and the storage backend. Returns 503 in CP mode if the backend is degraded.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Health check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.healthResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Backend degraded (CP mode)",
+                        "schema": {
+                            "$ref": "#/definitions/api.healthResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.attachVolumeRequest": {
+            "description": "Attach volume request",
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "example": "node-paris-01"
+                }
+            }
+        },
+        "api.createVolumeRequest": {
+            "description": "Create volume request",
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "example": "vol-01"
+                },
+                "size_mb": {
+                    "type": "integer",
+                    "example": 1024
+                }
+            }
+        },
+        "api.errResponse": {
+            "description": "Error response",
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string",
+                    "example": "volume not found"
+                }
+            }
+        },
+        "api.healthResponse": {
+            "description": "Health check response",
+            "type": "object",
+            "properties": {
+                "backend": {
+                    "type": "string",
+                    "example": "mock"
+                },
+                "consistency_mode": {
+                    "type": "string",
+                    "example": "cp"
+                },
+                "status": {
+                    "type": "string",
+                    "example": "ok"
+                },
+                "version": {
+                    "type": "string",
+                    "example": "1.0.0"
+                }
+            }
+        },
+        "api.listResponse": {
+            "description": "List of volumes",
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "volumes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.volumeResponse"
+                    }
+                }
+            }
+        },
+        "api.volumeResponse": {
+            "description": "Volume resource",
+            "type": "object",
+            "properties": {
+                "backend": {
+                    "type": "string",
+                    "example": "mock"
+                },
+                "created_at": {
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
+                },
+                "id": {
+                    "type": "string",
+                    "example": "550e8400-e29b-41d4-a716-446655440000"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "vol-01"
+                },
+                "node_id": {
+                    "type": "string",
+                    "example": "node-paris-01"
+                },
+                "size_mb": {
+                    "type": "integer",
+                    "example": 1024
+                },
+                "state": {
+                    "type": "string",
+                    "example": "available"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "description": "Block storage volume lifecycle operations",
+            "name": "volumes"
+        },
+        {
+            "description": "Health and observability endpoints",
+            "name": "system"
+        }
+    ]
+}

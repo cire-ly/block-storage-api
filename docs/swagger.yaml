@@ -1,0 +1,303 @@
+basePath: /
+definitions:
+  api.attachVolumeRequest:
+    description: Attach volume request
+    properties:
+      node_id:
+        example: node-paris-01
+        type: string
+    type: object
+  api.createVolumeRequest:
+    description: Create volume request
+    properties:
+      name:
+        example: vol-01
+        type: string
+      size_mb:
+        example: 1024
+        type: integer
+    type: object
+  api.errResponse:
+    description: Error response
+    properties:
+      error:
+        example: volume not found
+        type: string
+    type: object
+  api.healthResponse:
+    description: Health check response
+    properties:
+      backend:
+        example: mock
+        type: string
+      consistency_mode:
+        example: cp
+        type: string
+      status:
+        example: ok
+        type: string
+      version:
+        example: 1.0.0
+        type: string
+    type: object
+  api.listResponse:
+    description: List of volumes
+    properties:
+      count:
+        example: 1
+        type: integer
+      volumes:
+        items:
+          $ref: '#/definitions/api.volumeResponse'
+        type: array
+    type: object
+  api.volumeResponse:
+    description: Volume resource
+    properties:
+      backend:
+        example: mock
+        type: string
+      created_at:
+        example: "2024-01-01T00:00:00Z"
+        type: string
+      id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      name:
+        example: vol-01
+        type: string
+      node_id:
+        example: node-paris-01
+        type: string
+      size_mb:
+        example: 1024
+        type: integer
+      state:
+        example: available
+        type: string
+      updated_at:
+        example: "2024-01-01T00:00:00Z"
+        type: string
+    type: object
+host: 163.172.144.70:8080
+info:
+  contact:
+    email: cire.ly@nexonode.tech
+    name: Ciré LY
+    url: https://github.com/cire-ly/block-storage-api
+  description: |-
+    Pluggable block storage API — Ceph, Lustre, NVMe-oF backends with FSM volume lifecycle.
+    Demo project for Scaleway Senior Software Engineer application.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  title: Block Storage API
+  version: 1.0.0
+paths:
+  /api/v1/volumes:
+    get:
+      description: Returns all volumes managed by the storage backend.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.listResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: List all volumes
+      tags:
+      - volumes
+    post:
+      consumes:
+      - application/json
+      description: Creates a new block storage volume. The volume goes through PENDING
+        → CREATING → AVAILABLE states.
+      parameters:
+      - description: Volume creation parameters
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.createVolumeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.volumeResponse'
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "409":
+          description: Volume already exists
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "500":
+          description: Internal error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: Create a volume
+      tags:
+      - volumes
+  /api/v1/volumes/{name}:
+    delete:
+      description: 'Deletes an available volume. Transition: AVAILABLE → DELETING
+        → DELETED. Returns 409 if volume is attached.'
+      parameters:
+      - description: Volume name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No content
+        "404":
+          description: Volume not found
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "409":
+          description: Invalid FSM transition (e.g. volume is attached)
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: Delete a volume
+      tags:
+      - volumes
+    get:
+      description: Returns a single volume by name.
+      parameters:
+      - description: Volume name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.volumeResponse'
+        "404":
+          description: Volume not found
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: Get a volume
+      tags:
+      - volumes
+  /api/v1/volumes/{name}/attach:
+    put:
+      consumes:
+      - application/json
+      description: 'Attaches an available volume to a compute node. Transition: AVAILABLE
+        → ATTACHING → ATTACHED.'
+      parameters:
+      - description: Volume name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Node to attach to
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.attachVolumeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.volumeResponse'
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "404":
+          description: Volume not found
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "409":
+          description: Invalid FSM transition
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: Attach a volume to a node
+      tags:
+      - volumes
+  /api/v1/volumes/{name}/detach:
+    put:
+      description: 'Detaches an attached volume. Transition: ATTACHED → DETACHING
+        → AVAILABLE.'
+      parameters:
+      - description: Volume name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.volumeResponse'
+        "404":
+          description: Volume not found
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "409":
+          description: Invalid FSM transition
+          schema:
+            $ref: '#/definitions/api.errResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errResponse'
+      summary: Detach a volume from its node
+      tags:
+      - volumes
+  /healthz:
+    get:
+      description: Returns the health status of the API and the storage backend. Returns
+        503 in CP mode if the backend is degraded.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.healthResponse'
+        "503":
+          description: Backend degraded (CP mode)
+          schema:
+            $ref: '#/definitions/api.healthResponse'
+      summary: Health check
+      tags:
+      - system
+swagger: "2.0"
+tags:
+- description: Block storage volume lifecycle operations
+  name: volumes
+- description: Health and observability endpoints
+  name: system
