@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS volume_events;
+DROP TABLE IF EXISTS volumes;

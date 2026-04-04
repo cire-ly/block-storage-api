@@ -1,0 +1,218 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/cire-ly/block-storage-api/api"
+	"github.com/cire-ly/block-storage-api/config"
+	"github.com/cire-ly/block-storage-api/db"
+	"github.com/cire-ly/block-storage-api/observability"
+	"github.com/cire-ly/block-storage-api/storage"
+	"github.com/cire-ly/block-storage-api/storage/lustre"
+	"github.com/cire-ly/block-storage-api/storage/mock"
+	"github.com/cire-ly/block-storage-api/storage/nvmeof"
+)
+
+// ResourcesRegistry owns every long-lived resource and manages their lifecycle.
+// Startup order is explicit; shutdown is LIFO via closers.
+type ResourcesRegistry struct {
+	config  *config.Config
+	logger  *slog.Logger
+	dbPool  *pgxpool.Pool
+	storage struct {
+		backend storage.VolumeBackend
+	}
+	http struct {
+		server *http.Server
+	}
+	observability struct {
+		tracerProvider *observability.TracerProvider
+		meterProvider  *observability.MeterProvider
+		tracer         trace.Tracer
+		meter          metric.Meter
+	}
+	closers   []interface{ Close(context.Context) error }
+	errorChan chan error
+}
+
+type setupFn struct {
+	fn   func() error
+	desc string
+}
+
+// Setup initialises every resource in dependency order.
+func (rr *ResourcesRegistry) Setup() error {
+	rr.errorChan = make(chan error, 1)
+
+	steps := []setupFn{
+		{rr.setupConfig, "configuration"},
+		{rr.setupLogger, "logger"},
+		{rr.setupObservability, "observability (otel)"},
+		{rr.setupDatabase, "database (postgresql)"},
+		{rr.setupMigrations, "migrations"},
+		{rr.setupBackend, "storage backend"},
+		{rr.setupHTTP, "http server"},
+	}
+
+	for _, s := range steps {
+		rr.logger.Info("setup: " + s.desc + " ...")
+		if err := s.fn(); err != nil {
+			return fmt.Errorf("setup %s: %w", s.desc, err)
+		}
+		rr.logger.Info(s.desc + ": ok")
+	}
+	return nil
+}
+
+// Shutdown closes resources in reverse order (LIFO) and exits the process.
+func (rr *ResourcesRegistry) Shutdown(appErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, closer := range slices.Backward(rr.closers) {
+		if err := closer.Close(ctx); err != nil {
+			rr.logger.Error("shutdown error", "err", err)
+		}
+	}
+
+	if appErr != nil {
+		rr.logger.Error("fatal error", "err", appErr)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+// -- individual setup steps --------------------------------------------------
+
+func (rr *ResourcesRegistry) setupConfig() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	rr.config = cfg
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupLogger() error {
+	level := slog.LevelInfo
+	if rr.config.Env == "development" {
+		level = slog.LevelDebug
+	}
+	rr.logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(rr.logger)
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupObservability() error {
+	ctx := context.Background()
+
+	tp, err := observability.NewTracerProvider(ctx,
+		rr.config.OtelServiceName,
+		rr.config.OtelExporter,
+		rr.config.OtelJaegerEndpoint,
+	)
+	if err != nil {
+		return fmt.Errorf("tracer provider: %w", err)
+	}
+	rr.observability.tracerProvider = tp
+	rr.observability.tracer = observability.Tracer(rr.config.OtelServiceName)
+	rr.closers = append(rr.closers, tp)
+
+	mp, err := observability.NewMeterProvider(ctx, rr.config.OtelServiceName)
+	if err != nil {
+		return fmt.Errorf("meter provider: %w", err)
+	}
+	rr.observability.meterProvider = mp
+	rr.observability.meter = observability.Meter(rr.config.OtelServiceName)
+	rr.closers = append(rr.closers, mp)
+
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupDatabase() error {
+	if rr.config.DatabaseURL == "" {
+		rr.logger.Warn("DATABASE_URL not set — skipping database setup")
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := db.Connect(ctx, rr.config.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	rr.dbPool = pool
+	rr.closers = append(rr.closers, &poolCloser{pool})
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupMigrations() error {
+	if rr.dbPool == nil {
+		return nil
+	}
+	return db.RunMigrations(rr.config.DatabaseURL)
+}
+
+func (rr *ResourcesRegistry) setupBackend() error {
+	var b storage.VolumeBackend
+
+	switch rr.config.StorageBackend {
+	case "lustre":
+		b = lustre.New(rr.config.ConsistencyStrategy)
+	case "nvmeof":
+		b = nvmeof.New(rr.config.ConsistencyStrategy)
+	default:
+		b = mock.New(rr.config.ConsistencyStrategy)
+	}
+
+	rr.storage.backend = b
+	rr.closers = append(rr.closers, b)
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupHTTP() error {
+	router := api.NewRouter(
+		rr.storage.backend,
+		rr.logger,
+		rr.observability.tracer,
+		rr.observability.meter,
+	)
+
+	rr.http.server = &http.Server{
+		Addr:         ":" + strconv.Itoa(rr.config.Port),
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	rr.closers = append(rr.closers, &httpCloser{rr.http.server})
+	return nil
+}
+
+// -- closer adapters ---------------------------------------------------------
+
+type poolCloser struct{ p *pgxpool.Pool }
+
+func (c *poolCloser) Close(_ context.Context) error {
+	c.p.Close()
+	return nil
+}
+
+type httpCloser struct{ s *http.Server }
+
+func (c *httpCloser) Close(ctx context.Context) error {
+	return c.s.Shutdown(ctx)
+}
