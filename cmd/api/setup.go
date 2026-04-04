@@ -55,6 +55,8 @@ type setupFn struct {
 func (rr *ResourcesRegistry) Setup() error {
 	rr.errorChan = make(chan error, 1)
 
+	rr.logger = slog.Default()
+
 	steps := []setupFn{
 		{rr.setupConfig, "configuration"},
 		{rr.setupLogger, "logger"},
