@@ -5,6 +5,7 @@
 
 [![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/deploy.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/deploy.yml)
 [![Go Version](https://img.shields.io/badge/go-1.24-00ADD8?logo=go)](https://go.dev/)
+[![Coverage](https://codecov.io/gh/cire-ly/block-storage-api/branch/main/graph/badge.svg)](https://codecov.io/gh/cire-ly/block-storage-api)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cire-ly/block-storage-api)](https://goreportcard.com/report/github.com/cire-ly/block-storage-api)
 

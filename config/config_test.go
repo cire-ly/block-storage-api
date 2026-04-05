@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/cire-ly/block-storage-api/config"
 )
@@ -32,6 +33,19 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %d, want 8080", cfg.Port)
+	}
+	// Retry policy defaults.
+	if cfg.RetryPolicy.MaxAttempts != 3 {
+		t.Errorf("RetryPolicy.MaxAttempts = %d, want 3", cfg.RetryPolicy.MaxAttempts)
+	}
+	if cfg.RetryPolicy.InitialWait != 500*time.Millisecond {
+		t.Errorf("RetryPolicy.InitialWait = %s, want 500ms", cfg.RetryPolicy.InitialWait)
+	}
+	if cfg.RetryPolicy.Multiplier != 2.0 {
+		t.Errorf("RetryPolicy.Multiplier = %g, want 2.0", cfg.RetryPolicy.Multiplier)
+	}
+	if cfg.RetryPolicy.MaxWait != 10*time.Second {
+		t.Errorf("RetryPolicy.MaxWait = %s, want 10s", cfg.RetryPolicy.MaxWait)
 	}
 }
 
@@ -84,5 +98,79 @@ func TestCephMonitorsParsed(t *testing.T) {
 	}
 	if cfg.CephMonitors[0] != "10.0.0.1:6789" {
 		t.Errorf("CephMonitors[0] = %q, want 10.0.0.1:6789", cfg.CephMonitors[0])
+	}
+}
+
+func TestRetryPolicyFromEnv(t *testing.T) {
+	setEnv(t,
+		"VOLUME_RETRY_MAX_ATTEMPTS", "5",
+		"VOLUME_RETRY_INITIAL_WAIT", "1s",
+		"VOLUME_RETRY_MULTIPLIER", "1.5",
+		"VOLUME_RETRY_MAX_WAIT", "30s",
+	)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RetryPolicy.MaxAttempts != 5 {
+		t.Errorf("MaxAttempts = %d, want 5", cfg.RetryPolicy.MaxAttempts)
+	}
+	if cfg.RetryPolicy.InitialWait != time.Second {
+		t.Errorf("InitialWait = %s, want 1s", cfg.RetryPolicy.InitialWait)
+	}
+	if cfg.RetryPolicy.Multiplier != 1.5 {
+		t.Errorf("Multiplier = %g, want 1.5", cfg.RetryPolicy.Multiplier)
+	}
+	if cfg.RetryPolicy.MaxWait != 30*time.Second {
+		t.Errorf("MaxWait = %s, want 30s", cfg.RetryPolicy.MaxWait)
+	}
+}
+
+func TestInvalidRetryMaxAttempts(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_MAX_ATTEMPTS", "0")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for MaxAttempts=0, got nil")
+	}
+}
+
+func TestInvalidRetryMaxAttemptsNotANumber(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_MAX_ATTEMPTS", "bad")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for non-numeric MaxAttempts, got nil")
+	}
+}
+
+func TestInvalidRetryInitialWait(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_INITIAL_WAIT", "bad")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for invalid InitialWait, got nil")
+	}
+}
+
+func TestInvalidRetryMultiplier(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_MULTIPLIER", "bad")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for invalid Multiplier, got nil")
+	}
+}
+
+func TestInvalidRetryMultiplierTooLow(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_MULTIPLIER", "0.5")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for Multiplier < 1.0, got nil")
+	}
+}
+
+func TestInvalidRetryMaxWait(t *testing.T) {
+	setEnv(t, "VOLUME_RETRY_MAX_WAIT", "bad")
+	_, err := config.Load()
+	if err == nil {
+		t.Error("expected error for invalid MaxWait, got nil")
 	}
 }

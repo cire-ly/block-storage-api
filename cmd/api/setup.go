@@ -204,6 +204,12 @@ func (rr *ResourcesRegistry) setupVolumeFeature() error {
 		Tracer:  rr.observability.tracer,
 		Meter:   rr.observability.meter,
 		Router:  rr.http.router,
+		RetryPolicy: volume.RetryPolicy{
+			MaxAttempts: rr.config.RetryPolicy.MaxAttempts,
+			InitialWait: rr.config.RetryPolicy.InitialWait,
+			Multiplier:  rr.config.RetryPolicy.Multiplier,
+			MaxWait:     rr.config.RetryPolicy.MaxWait,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("volume feature: %w", err)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +36,7 @@ type application struct {
 	logger  LoggerDependency
 	tracer  trace.Tracer
 	policy  RetryPolicy
+	wg      *sync.WaitGroup // shared with VolumeFeature — tracks all retry goroutines
 }
 
 func newApplication(
@@ -43,13 +44,16 @@ func newApplication(
 	db DatabaseDependency,
 	logger LoggerDependency,
 	tracer trace.Tracer,
+	policy RetryPolicy,
+	wg *sync.WaitGroup,
 ) *application {
 	return &application{
 		backend: backend,
 		db:      db,
 		logger:  logger,
 		tracer:  tracer,
-		policy:  DefaultRetryPolicy(),
+		policy:  policy,
+		wg:      wg,
 	}
 }
 
@@ -103,15 +107,19 @@ func (a *application) CreateVolume(ctx context.Context, name string, sizeMB int)
 	}
 
 	// Async: create on backend, then transition to available or retry.
-	// ctx is derived from BaseContext (app lifecycle) — goroutine stops on shutdown.
-	go a.runWithRetry(
-		ctx, v.Name,
-		func(bCtx context.Context) error {
-			_, bErr := a.backend.CreateVolume(bCtx, v.Name, v.SizeMB)
-			return bErr
-		},
-		EventReady,
-	)
+	// The goroutine is tracked by wg so VolumeFeature.Close() can drain it.
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.runWithRetry(
+			ctx, v.Name,
+			func(bCtx context.Context) error {
+				_, bErr := a.backend.CreateVolume(bCtx, v.Name, v.SizeMB)
+				return bErr
+			},
+			EventReady,
+		)
+	}()
 
 	return copyVolume(v), nil
 }
@@ -130,13 +138,17 @@ func (a *application) DeleteVolume(ctx context.Context, name string) error {
 		return err
 	}
 
-	go a.runWithRetry(
-		ctx, v.Name,
-		func(bCtx context.Context) error {
-			return a.backend.DeleteVolume(bCtx, v.Name)
-		},
-		EventDeleted,
-	)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.runWithRetry(
+			ctx, v.Name,
+			func(bCtx context.Context) error {
+				return a.backend.DeleteVolume(bCtx, v.Name)
+			},
+			EventDeleted,
+		)
+	}()
 
 	return nil
 }
@@ -180,13 +192,17 @@ func (a *application) AttachVolume(ctx context.Context, name string, nodeID stri
 		return err
 	}
 
-	go a.runWithRetry(
-		ctx, v.Name,
-		func(bCtx context.Context) error {
-			return a.backend.AttachVolume(bCtx, v.Name, nodeID)
-		},
-		EventAttached,
-	)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.runWithRetry(
+			ctx, v.Name,
+			func(bCtx context.Context) error {
+				return a.backend.AttachVolume(bCtx, v.Name, nodeID)
+			},
+			EventAttached,
+		)
+	}()
 
 	return nil
 }
@@ -205,14 +221,18 @@ func (a *application) DetachVolume(ctx context.Context, name string) error {
 		return err
 	}
 
-	go a.runWithRetry(
-		ctx, v.Name,
-		func(bCtx context.Context) error {
-			return a.backend.DetachVolume(bCtx, v.Name)
-		},
-		EventDetached,
-		func(v *storage.Volume) { v.NodeID = "" }, // clear node assignment on success
-	)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.runWithRetry(
+			ctx, v.Name,
+			func(bCtx context.Context) error {
+				return a.backend.DetachVolume(bCtx, v.Name)
+			},
+			EventDetached,
+			func(v *storage.Volume) { v.NodeID = "" }, // clear node assignment on success
+		)
+	}()
 
 	return nil
 }
@@ -275,10 +295,12 @@ func (a *application) applyEvent(ctx context.Context, v *storage.Volume, event s
 	return nil
 }
 
-// runWithRetry executes op with exponential back-off.
-// On success it fires successEvent; on exhausted retries it fires EventFail.
-// postSuccess, if non-nil, mutates the volume before the success event is persisted.
-// The goroutine stops when ctx is canceled (e.g., server shutdown via BaseContext).
+// runWithRetry executes op with exponential back-off, up to policy.MaxAttempts times.
+// On success it fires successEvent. On exhausted retries it fires EventFail.
+// postSuccess, if provided, mutates the volume before the success event is persisted.
+// The caller MUST wrap this function in a goroutine tracked by a.wg.
+// The loop checks ctx.Done() before each attempt and during back-off so the
+// goroutine stops cleanly when the server shuts down.
 func (a *application) runWithRetry(
 	ctx context.Context,
 	name string,
@@ -287,25 +309,23 @@ func (a *application) runWithRetry(
 	postSuccess ...func(*storage.Volume),
 ) {
 	log := loggerFromCtx(ctx, a.logger)
-	attempts := 0
 	wait := a.policy.InitialWait
 
-	for {
-		// Stop if the application is shutting down.
+	for attempt := 1; attempt <= a.policy.MaxAttempts; attempt++ {
+		// Stop before each attempt if the application is shutting down.
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		attempts++
-
-		// Each backend attempt gets a dedicated timeout.
+		// Each backend call gets its own deadline.
 		bCtx, bCancel := context.WithTimeout(ctx, backendTimeout)
 		err := op(bCtx)
 		bCancel()
 
 		if err == nil {
+			// Success: load volume, apply optional post-success mutation, fire event.
 			dbCtx, dbCancel := context.WithTimeout(ctx, dbTimeout)
 			v, loadErr := a.db.LoadVolume(dbCtx, name)
 			dbCancel()
@@ -324,10 +344,10 @@ func (a *application) runWithRetry(
 			return
 		}
 
-		log.Warn("operation failed, will retry",
-			"name", name, "attempt", attempts, "max", a.policy.MaxAttempts, "err", err)
+		log.Warn("operation failed",
+			"name", name, "attempt", attempt, "max", a.policy.MaxAttempts, "err", err)
 
-		// Load fresh state to apply error event.
+		// Transition to *_failed state.
 		dbCtx, dbCancel := context.WithTimeout(ctx, dbTimeout)
 		v, loadErr := a.db.LoadVolume(dbCtx, name)
 		dbCancel()
@@ -335,15 +355,13 @@ func (a *application) runWithRetry(
 			log.Error("retry: cannot load volume", "name", name)
 			return
 		}
-
-		// Transition to *_failed state.
 		if applyErr := a.applyEvent(ctx, v, EventError); applyErr != nil {
 			log.Error("retry: cannot apply error event", "name", name, "err", applyErr)
 			return
 		}
 
-		if attempts >= a.policy.MaxAttempts {
-			// Exhausted retries — move to terminal error.
+		// Exhausted all attempts — transition to terminal error state.
+		if attempt == a.policy.MaxAttempts {
 			dbCtx2, dbCancel2 := context.WithTimeout(ctx, dbTimeout)
 			v, _ = a.db.LoadVolume(dbCtx2, name)
 			dbCancel2()
@@ -352,18 +370,19 @@ func (a *application) runWithRetry(
 					log.Error("retry: cannot apply fail event", "name", name, "err", applyErr)
 				}
 			}
-			log.Error("operation failed after max retries", "name", name, "attempts", attempts)
+			log.Error("operation failed after max retries",
+				"name", name, "attempts", attempt)
 			return
 		}
 
-		// Back-off — cancel early if shutdown is requested.
+		// Back-off — exit early if the application is shutting down.
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
 		}
 
-		// *_failed → back to in-progress.
+		// *_failed → back to the in-progress state for the next attempt.
 		dbCtx3, dbCancel3 := context.WithTimeout(ctx, dbTimeout)
 		v, _ = a.db.LoadVolume(dbCtx3, name)
 		dbCancel3()
@@ -374,7 +393,7 @@ func (a *application) runWithRetry(
 			}
 		}
 
-		// Exponential back-off.
+		// Exponential back-off with ceiling.
 		wait = time.Duration(float64(wait) * a.policy.Multiplier)
 		if wait > a.policy.MaxWait {
 			wait = a.policy.MaxWait
@@ -401,12 +420,3 @@ func copyVolume(v *storage.Volume) *storage.Volume {
 	cp := *v
 	return &cp
 }
-
-// slogAdapter wraps *slog.Logger to satisfy LoggerDependency.
-// Used internally when the context carries a *slog.Logger.
-type slogAdapter struct{ l *slog.Logger }
-
-func (s slogAdapter) Debug(msg string, args ...any) { s.l.Debug(msg, args...) }
-func (s slogAdapter) Info(msg string, args ...any)  { s.l.Info(msg, args...) }
-func (s slogAdapter) Warn(msg string, args ...any)  { s.l.Warn(msg, args...) }
-func (s slogAdapter) Error(msg string, args ...any) { s.l.Error(msg, args...) }
