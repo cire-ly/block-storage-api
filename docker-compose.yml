@@ -47,6 +47,7 @@ ervices:
       - lokidata:/loki
     restart: unless-stopped
 
+
   grafana:
     image: grafana/grafana:10.2.0
     ports:
