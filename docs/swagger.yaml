@@ -1,13 +1,13 @@
 basePath: /
 definitions:
-  api.attachVolumeRequest:
+  volume.attachVolumeRequest:
     description: Attach volume request
     properties:
       node_id:
         example: node-paris-01
         type: string
     type: object
-  api.createVolumeRequest:
+  volume.createVolumeRequest:
     description: Create volume request
     properties:
       name:
@@ -17,21 +17,18 @@ definitions:
         example: 1024
         type: integer
     type: object
-  api.errResponse:
+  volume.errResponse:
     description: Error response
     properties:
       error:
         example: volume not found
         type: string
     type: object
-  api.healthResponse:
+  volume.healthResponse:
     description: Health check response
     properties:
       backend:
         example: mock
-        type: string
-      consistency_mode:
-        example: cp
         type: string
       status:
         example: ok
@@ -40,7 +37,7 @@ definitions:
         example: 1.0.0
         type: string
     type: object
-  api.listResponse:
+  volume.listResponse:
     description: List of volumes
     properties:
       count:
@@ -48,10 +45,10 @@ definitions:
         type: integer
       volumes:
         items:
-          $ref: '#/definitions/api.volumeResponse'
+          $ref: '#/definitions/volume.volumeResponse'
         type: array
     type: object
-  api.volumeResponse:
+  volume.volumeResponse:
     description: Volume resource
     properties:
       backend:
@@ -85,9 +82,7 @@ info:
     email: cire.ly@nexonode.tech
     name: Ciré LY
     url: https://github.com/cire-ly/block-storage-api
-  description: |-
-    Pluggable block storage API — Ceph, Lustre, NVMe-oF backends with FSM volume lifecycle.
-    Demo project for Scaleway Senior Software Engineer application.
+  description: Error response
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -103,52 +98,52 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.listResponse'
+            $ref: '#/definitions/volume.listResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
       summary: List all volumes
       tags:
       - volumes
     post:
       consumes:
       - application/json
-      description: Creates a new block storage volume. The volume goes through PENDING
-        → CREATING → AVAILABLE states.
+      description: Creates a new block storage volume. The volume transitions PENDING
+        → CREATING → AVAILABLE asynchronously.
       parameters:
       - description: Volume creation parameters
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/api.createVolumeRequest'
+          $ref: '#/definitions/volume.createVolumeRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/api.volumeResponse'
+            $ref: '#/definitions/volume.volumeResponse'
         "400":
           description: Invalid request
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "409":
           description: Volume already exists
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "500":
           description: Internal error
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
       summary: Create a volume
       tags:
       - volumes
   /api/v1/volumes/{name}:
     delete:
       description: 'Deletes an available volume. Transition: AVAILABLE → DELETING
-        → DELETED. Returns 409 if volume is attached.'
+        → DELETED (async). Returns 409 if attached.'
       parameters:
       - description: Volume name
         in: path
@@ -158,20 +153,20 @@ paths:
       produces:
       - application/json
       responses:
-        "204":
-          description: No content
+        "202":
+          description: Accepted
         "404":
           description: Volume not found
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "409":
           description: Invalid FSM transition (e.g. volume is attached)
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
       summary: Delete a volume
       tags:
       - volumes
@@ -189,15 +184,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.volumeResponse'
+            $ref: '#/definitions/volume.volumeResponse'
         "404":
           description: Volume not found
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
       summary: Get a volume
       tags:
       - volumes
@@ -206,7 +201,7 @@ paths:
       consumes:
       - application/json
       description: 'Attaches an available volume to a compute node. Transition: AVAILABLE
-        → ATTACHING → ATTACHED.'
+        → ATTACHING → ATTACHED (async).'
       parameters:
       - description: Volume name
         in: path
@@ -218,37 +213,70 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/api.attachVolumeRequest'
+          $ref: '#/definitions/volume.attachVolumeRequest'
       produces:
       - application/json
       responses:
-        "200":
-          description: OK
+        "202":
+          description: Accepted
           schema:
-            $ref: '#/definitions/api.volumeResponse'
+            $ref: '#/definitions/volume.volumeResponse'
         "400":
           description: Invalid request
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "404":
           description: Volume not found
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "409":
           description: Invalid FSM transition
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
       summary: Attach a volume to a node
       tags:
       - volumes
   /api/v1/volumes/{name}/detach:
     put:
       description: 'Detaches an attached volume. Transition: ATTACHED → DETACHING
-        → AVAILABLE.'
+        → AVAILABLE (async).'
+      parameters:
+      - description: Volume name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/volume.volumeResponse'
+        "404":
+          description: Volume not found
+          schema:
+            $ref: '#/definitions/volume.errResponse'
+        "409":
+          description: Invalid FSM transition
+          schema:
+            $ref: '#/definitions/volume.errResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/volume.errResponse'
+      summary: Detach a volume from its node
+      tags:
+      - volumes
+  /api/v1/volumes/{name}/reset:
+    post:
+      description: |-
+        Resets a volume from the terminal error state back to pending, clearing the retry counter.
+        Returns 409 if the volume is not in the error state.
       parameters:
       - description: Volume name
         in: path
@@ -261,37 +289,36 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.volumeResponse'
+            $ref: '#/definitions/volume.volumeResponse'
         "404":
           description: Volume not found
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "409":
-          description: Invalid FSM transition
+          description: Volume not in error state
           schema:
-            $ref: '#/definitions/api.errResponse'
+            $ref: '#/definitions/volume.errResponse'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/api.errResponse'
-      summary: Detach a volume from its node
+            $ref: '#/definitions/volume.errResponse'
+      summary: Reset a volume from error state
       tags:
       - volumes
   /healthz:
     get:
-      description: Returns the health status of the API and the storage backend. Returns
-        503 in CP mode if the backend is degraded.
+      description: Returns the health status of the API and storage backend.
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.healthResponse'
+            $ref: '#/definitions/volume.healthResponse'
         "503":
-          description: Backend degraded (CP mode)
+          description: Backend degraded
           schema:
-            $ref: '#/definitions/api.healthResponse'
+            $ref: '#/definitions/volume.healthResponse'
       summary: Health check
       tags:
       - system

@@ -5,8 +5,25 @@ import (
 	"time"
 )
 
+// Volume states — used by backends and the volume FSM.
+const (
+	StatePending         = "pending"
+	StateCreating        = "creating"
+	StateCreatingFailed  = "creating_failed"
+	StateAvailable       = "available"
+	StateAttaching       = "attaching"
+	StateAttachingFailed = "attaching_failed"
+	StateAttached        = "attached"
+	StateDetaching       = "detaching"
+	StateDetachingFailed = "detaching_failed"
+	StateDeleting        = "deleting"
+	StateDeletingFailed  = "deleting_failed"
+	StateDeleted         = "deleted"
+	StateError           = "error"
+)
+
 // VolumeBackend is the central interface every storage backend must implement.
-// Defined on the consumer side (cmd/api) — backends implement it, not the other way around.
+// Defined on the consumer side — backends implement it.
 type VolumeBackend interface {
 	CreateVolume(ctx context.Context, name string, sizeMB int) (*Volume, error)
 	DeleteVolume(ctx context.Context, name string) error
@@ -16,10 +33,10 @@ type VolumeBackend interface {
 	DetachVolume(ctx context.Context, name string) error
 	HealthCheck(ctx context.Context) error
 	BackendName() string
-	ConsistencyMode() string     // "cp" or "ap"
-	Close(context.Context) error // implements io.Closer-like contract
+	Close(context.Context) error
 }
 
+// Volume holds the metadata for a single block storage volume.
 type Volume struct {
 	ID        string
 	Name      string

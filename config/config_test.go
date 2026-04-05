@@ -30,9 +30,6 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.StorageBackend != "mock" {
 		t.Errorf("StorageBackend = %q, want mock", cfg.StorageBackend)
 	}
-	if cfg.ConsistencyStrategy != "cp" {
-		t.Errorf("ConsistencyStrategy = %q, want cp", cfg.ConsistencyStrategy)
-	}
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %d, want 8080", cfg.Port)
 	}
@@ -40,8 +37,7 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadFromEnv(t *testing.T) {
 	setEnv(t,
-		"STORAGE_BACKEND", "lustre",
-		"CONSISTENCY_STRATEGY", "ap",
+		"STORAGE_BACKEND", "ceph",
 		"PORT", "9090",
 		"DATABASE_URL", "postgres://u:p@host/db",
 	)
@@ -50,14 +46,14 @@ func TestLoadFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.StorageBackend != "lustre" {
+	if cfg.StorageBackend != "ceph" {
 		t.Errorf("StorageBackend = %q", cfg.StorageBackend)
-	}
-	if cfg.ConsistencyStrategy != "ap" {
-		t.Errorf("ConsistencyStrategy = %q", cfg.ConsistencyStrategy)
 	}
 	if cfg.Port != 9090 {
 		t.Errorf("Port = %d", cfg.Port)
+	}
+	if cfg.DatabaseURL != "postgres://u:p@host/db" {
+		t.Errorf("DatabaseURL = %q", cfg.DatabaseURL)
 	}
 }
 
@@ -69,18 +65,24 @@ func TestInvalidBackend(t *testing.T) {
 	}
 }
 
-func TestInvalidConsistency(t *testing.T) {
-	setEnv(t, "CONSISTENCY_STRATEGY", "both")
-	_, err := config.Load()
-	if err == nil {
-		t.Error("expected error for invalid consistency, got nil")
-	}
-}
-
 func TestInvalidPort(t *testing.T) {
 	setEnv(t, "PORT", "not-a-number")
 	_, err := config.Load()
 	if err == nil {
 		t.Error("expected error for invalid port, got nil")
+	}
+}
+
+func TestCephMonitorsParsed(t *testing.T) {
+	setEnv(t, "CEPH_MONITORS", "10.0.0.1:6789,10.0.0.2:6789")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.CephMonitors) != 2 {
+		t.Errorf("CephMonitors len = %d, want 2", len(cfg.CephMonitors))
+	}
+	if cfg.CephMonitors[0] != "10.0.0.1:6789" {
+		t.Errorf("CephMonitors[0] = %q, want 10.0.0.1:6789", cfg.CephMonitors[0])
 	}
 }

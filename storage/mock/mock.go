@@ -1,6 +1,6 @@
 // Package mock implements VolumeBackend entirely in memory.
 // It reproduces all business constraints (duplicate names, invalid size,
-// forbidden FSM transitions) and simulates both CP and AP consistency modes.
+// forbidden transitions) without any external dependencies.
 package mock
 
 import (
@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 
-	volumefsm "github.com/cire-ly/block-storage-api/fsm"
 	"github.com/cire-ly/block-storage-api/storage"
 )
 
@@ -27,19 +26,18 @@ var (
 // MockBackend is an in-memory VolumeBackend.
 // sync.RWMutex: RLock for reads, Lock for writes.
 type MockBackend struct {
-	mu          sync.RWMutex
-	volumes     map[string]*storage.Volume // key: volume name
-	consistency string                     // "cp" or "ap"
+	mu      sync.RWMutex
+	volumes map[string]*storage.Volume // key: volume name
 }
 
-func New(consistency string) *MockBackend {
+// New creates a new in-memory backend.
+func New() *MockBackend {
 	return &MockBackend{
-		volumes:     make(map[string]*storage.Volume),
-		consistency: consistency,
+		volumes: make(map[string]*storage.Volume),
 	}
 }
 
-// CreateVolume validates inputs, runs pending→creating→available, and persists in memory.
+// CreateVolume validates input and stores the volume in the available state.
 func (m *MockBackend) CreateVolume(_ context.Context, name string, sizeMB int) (*storage.Volume, error) {
 	if sizeMB <= 0 {
 		return nil, ErrInvalidSize
@@ -57,24 +55,17 @@ func (m *MockBackend) CreateVolume(_ context.Context, name string, sizeMB int) (
 		ID:        uuid.New().String(),
 		Name:      name,
 		SizeMB:    sizeMB,
-		State:     volumefsm.StatePending,
+		State:     storage.StateAvailable,
 		Backend:   "mock",
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-
-	if err := m.applyEvent(v, volumefsm.EventCreate); err != nil {
-		return nil, err
-	}
-	if err := m.applyEvent(v, volumefsm.EventReady); err != nil {
-		return nil, err
 	}
 
 	m.volumes[name] = v
 	return copyVolume(v), nil
 }
 
-// DeleteVolume runs available→deleting→deleted and removes the entry.
+// DeleteVolume removes the volume. Returns ErrInvalidTransition when attached.
 func (m *MockBackend) DeleteVolume(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -83,12 +74,8 @@ func (m *MockBackend) DeleteVolume(_ context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
 	}
-
-	if err := m.applyEvent(v, volumefsm.EventDelete); err != nil {
-		return err
-	}
-	if err := m.applyEvent(v, volumefsm.EventDeleted); err != nil {
-		return err
+	if v.State == storage.StateAttached {
+		return fmt.Errorf("%w: cannot delete attached volume", ErrInvalidTransition)
 	}
 
 	delete(m.volumes, name)
@@ -117,7 +104,8 @@ func (m *MockBackend) GetVolume(_ context.Context, name string) (*storage.Volume
 	return copyVolume(v), nil
 }
 
-// AttachVolume runs available→attaching→attached and records the nodeID.
+// AttachVolume sets NodeID and marks the volume as attached.
+// Returns ErrInvalidTransition when the volume is not in the available state.
 func (m *MockBackend) AttachVolume(_ context.Context, name string, nodeID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -126,18 +114,18 @@ func (m *MockBackend) AttachVolume(_ context.Context, name string, nodeID string
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
 	}
+	if v.State != storage.StateAvailable {
+		return fmt.Errorf("%w: cannot attach volume in state %q", ErrInvalidTransition, v.State)
+	}
 
-	if err := m.applyEvent(v, volumefsm.EventAttach); err != nil {
-		return err
-	}
 	v.NodeID = nodeID
-	if err := m.applyEvent(v, volumefsm.EventAttached); err != nil {
-		return err
-	}
+	v.State = storage.StateAttached
+	v.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
-// DetachVolume runs attached→detaching→available and clears the nodeID.
+// DetachVolume clears NodeID and marks the volume as available.
+// Returns ErrInvalidTransition when the volume is not attached.
 func (m *MockBackend) DetachVolume(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -146,35 +134,19 @@ func (m *MockBackend) DetachVolume(_ context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
 	}
+	if v.State != storage.StateAttached {
+		return fmt.Errorf("%w: cannot detach volume in state %q", ErrInvalidTransition, v.State)
+	}
 
-	if err := m.applyEvent(v, volumefsm.EventDetach); err != nil {
-		return err
-	}
 	v.NodeID = ""
-	if err := m.applyEvent(v, volumefsm.EventDetached); err != nil {
-		return err
-	}
+	v.State = storage.StateAvailable
+	v.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
 func (m *MockBackend) HealthCheck(_ context.Context) error { return nil }
-func (m *MockBackend) BackendName() string                 { return "mock" }
-func (m *MockBackend) ConsistencyMode() string             { return m.consistency }
-func (m *MockBackend) Close(_ context.Context) error       { return nil }
-
-// applyEvent validates and applies a single FSM event to the volume (must hold lock).
-func (m *MockBackend) applyEvent(v *storage.Volume, event string) error {
-	if !volumefsm.CanTransition(v.State, event) {
-		return fmt.Errorf("%w: cannot %q from state %q", ErrInvalidTransition, event, v.State)
-	}
-	newState, err := volumefsm.Transition(context.Background(), v.State, event)
-	if err != nil {
-		return err
-	}
-	v.State = newState
-	v.UpdatedAt = time.Now().UTC()
-	return nil
-}
+func (m *MockBackend) BackendName() string                  { return "mock" }
+func (m *MockBackend) Close(_ context.Context) error        { return nil }
 
 func copyVolume(v *storage.Volume) *storage.Volume {
 	cp := *v

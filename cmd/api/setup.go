@@ -10,18 +10,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/cire-ly/block-storage-api/api"
 	"github.com/cire-ly/block-storage-api/config"
-	"github.com/cire-ly/block-storage-api/db"
-	"github.com/cire-ly/block-storage-api/observability"
+	internaldb "github.com/cire-ly/block-storage-api/internal/db"
+	"github.com/cire-ly/block-storage-api/internal/observability"
 	"github.com/cire-ly/block-storage-api/storage"
-	"github.com/cire-ly/block-storage-api/storage/lustre"
 	"github.com/cire-ly/block-storage-api/storage/mock"
-	"github.com/cire-ly/block-storage-api/storage/nvmeof"
+	"github.com/cire-ly/block-storage-api/volume"
+	"github.com/cire-ly/block-storage-api/volume/repository"
 )
 
 // ResourcesRegistry owns every long-lived resource and manages their lifecycle.
@@ -29,11 +29,15 @@ import (
 type ResourcesRegistry struct {
 	config  *config.Config
 	logger  *slog.Logger
-	dbPool  *pgxpool.Pool
+	db      struct {
+		pool *pgxpool.Pool
+		repo volume.DatabaseDependency
+	}
 	storage struct {
 		backend storage.VolumeBackend
 	}
 	http struct {
+		router chi.Router
 		server *http.Server
 	}
 	observability struct {
@@ -55,6 +59,7 @@ type setupFn struct {
 func (rr *ResourcesRegistry) Setup() error {
 	rr.errorChan = make(chan error, 1)
 
+	// Default logger before config is loaded, so setup errors are visible.
 	rr.logger = slog.Default()
 
 	steps := []setupFn{
@@ -65,6 +70,7 @@ func (rr *ResourcesRegistry) Setup() error {
 		{rr.setupMigrations, "migrations"},
 		{rr.setupBackend, "storage backend"},
 		{rr.setupHTTP, "http server"},
+		{rr.setupVolumeFeature, "volume feature"},
 	}
 
 	for _, s := range steps {
@@ -144,63 +150,65 @@ func (rr *ResourcesRegistry) setupObservability() error {
 
 func (rr *ResourcesRegistry) setupDatabase() error {
 	if rr.config.DatabaseURL == "" {
-		rr.logger.Warn("DATABASE_URL not set — skipping database setup")
+		rr.logger.Warn("DATABASE_URL not set — using in-memory volume repository")
+		rr.db.repo = repository.NewInMemoryRepository()
 		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pool, err := db.Connect(ctx, rr.config.DatabaseURL)
+	pool, err := internaldb.Connect(ctx, rr.config.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	rr.dbPool = pool
+	rr.db.pool = pool
+	rr.db.repo = repository.NewPostgresRepository(pool)
 	rr.closers = append(rr.closers, &poolCloser{pool})
 	return nil
 }
 
 func (rr *ResourcesRegistry) setupMigrations() error {
-	if rr.dbPool == nil {
+	if rr.db.pool == nil {
 		return nil
 	}
-	return db.RunMigrations(rr.config.DatabaseURL)
+	return internaldb.RunMigrations(rr.config.DatabaseURL)
 }
 
 func (rr *ResourcesRegistry) setupBackend() error {
-	var b storage.VolumeBackend
-
-	switch rr.config.StorageBackend {
-	case "lustre":
-		b = lustre.New(rr.config.ConsistencyStrategy)
-	case "nvmeof":
-		b = nvmeof.New(rr.config.ConsistencyStrategy)
-	default:
-		b = mock.New(rr.config.ConsistencyStrategy)
-	}
-
-	rr.storage.backend = b
-	rr.closers = append(rr.closers, b)
+	rr.storage.backend = mock.New()
+	rr.closers = append(rr.closers, rr.storage.backend)
 	return nil
 }
 
 func (rr *ResourcesRegistry) setupHTTP() error {
-	router := api.NewRouter(
-		rr.storage.backend,
-		rr.logger,
-		rr.observability.tracer,
-		rr.observability.meter,
-	)
+	rr.http.router = chi.NewMux()
 
 	rr.http.server = &http.Server{
 		Addr:         ":" + strconv.Itoa(rr.config.Port),
-		Handler:      router,
+		Handler:      rr.http.router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
 	rr.closers = append(rr.closers, &httpCloser{rr.http.server})
+	return nil
+}
+
+func (rr *ResourcesRegistry) setupVolumeFeature() error {
+	feat, err := volume.NewVolumeFeature(volume.NewVolumeFeatureParams{
+		Logger:  rr.logger,
+		Backend: rr.storage.backend,
+		DB:      rr.db.repo,
+		Tracer:  rr.observability.tracer,
+		Meter:   rr.observability.meter,
+		Router:  rr.http.router,
+	})
+	if err != nil {
+		return fmt.Errorf("volume feature: %w", err)
+	}
+	rr.closers = append(rr.closers, feat)
 	return nil
 }
 

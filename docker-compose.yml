@@ -7,7 +7,6 @@ services:
       - "8080:8080"
     environment:
       STORAGE_BACKEND: mock
-      CONSISTENCY_STRATEGY: cp
       DATABASE_URL: postgres://blockstore:blockstore@postgres:5432/blockstore?sslmode=disable
       PORT: "8080"
       ENV: development

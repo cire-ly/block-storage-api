@@ -15,16 +15,14 @@ import (
 	"github.com/ceph/go-ceph/rbd"
 	"github.com/google/uuid"
 
-	"github.com/cire-ly/block-storage-api/fsm"
 	"github.com/cire-ly/block-storage-api/storage"
 )
 
 // Config holds Ceph connection parameters.
 type Config struct {
-	Monitors    []string
-	Pool        string
-	Keyring     string
-	Consistency string
+	Monitors []string
+	Pool     string
+	Keyring  string
 }
 
 // CephBackend manages RBD images as block volumes.
@@ -37,13 +35,14 @@ type CephBackend struct {
 	volumes map[string]*storage.Volume // name → metadata cache
 }
 
+// New connects to the Ceph cluster and opens the configured pool.
 func New(cfg Config) (*CephBackend, error) {
 	conn, err := rados.NewConn()
 	if err != nil {
 		return nil, fmt.Errorf("rados.NewConn: %w", err)
 	}
 	if err := conn.ReadConfigFile("/etc/ceph/ceph.conf"); err != nil {
-		// fallback: set monitors programmatically
+		// Fallback: set monitors programmatically.
 		for _, mon := range cfg.Monitors {
 			_ = conn.SetConfigOption("mon_host", mon)
 		}
@@ -67,7 +66,7 @@ func New(cfg Config) (*CephBackend, error) {
 	}, nil
 }
 
-func (c *CephBackend) CreateVolume(ctx context.Context, name string, sizeMB int) (*storage.Volume, error) {
+func (c *CephBackend) CreateVolume(_ context.Context, name string, sizeMB int) (*storage.Volume, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -86,7 +85,7 @@ func (c *CephBackend) CreateVolume(ctx context.Context, name string, sizeMB int)
 		ID:        uuid.New().String(),
 		Name:      name,
 		SizeMB:    sizeMB,
-		State:     fsm.StateAvailable,
+		State:     storage.StateAvailable,
 		Backend:   "ceph",
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -95,7 +94,7 @@ func (c *CephBackend) CreateVolume(ctx context.Context, name string, sizeMB int)
 	return copyVolume(v), nil
 }
 
-func (c *CephBackend) DeleteVolume(ctx context.Context, name string) error {
+func (c *CephBackend) DeleteVolume(_ context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -118,7 +117,7 @@ func (c *CephBackend) DeleteVolume(ctx context.Context, name string) error {
 	return nil
 }
 
-func (c *CephBackend) ListVolumes(ctx context.Context) ([]*storage.Volume, error) {
+func (c *CephBackend) ListVolumes(_ context.Context) ([]*storage.Volume, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]*storage.Volume, 0, len(c.volumes))
@@ -128,7 +127,7 @@ func (c *CephBackend) ListVolumes(ctx context.Context) ([]*storage.Volume, error
 	return out, nil
 }
 
-func (c *CephBackend) GetVolume(ctx context.Context, name string) (*storage.Volume, error) {
+func (c *CephBackend) GetVolume(_ context.Context, name string) (*storage.Volume, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	v, ok := c.volumes[name]
@@ -138,7 +137,7 @@ func (c *CephBackend) GetVolume(ctx context.Context, name string) (*storage.Volu
 	return copyVolume(v), nil
 }
 
-func (c *CephBackend) AttachVolume(ctx context.Context, name string, nodeID string) error {
+func (c *CephBackend) AttachVolume(_ context.Context, name string, nodeID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v, ok := c.volumes[name]
@@ -146,12 +145,12 @@ func (c *CephBackend) AttachVolume(ctx context.Context, name string, nodeID stri
 		return fmt.Errorf("ceph: volume %q not found", name)
 	}
 	v.NodeID = nodeID
-	v.State = fsm.StateAttached
+	v.State = storage.StateAttached
 	v.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
-func (c *CephBackend) DetachVolume(ctx context.Context, name string) error {
+func (c *CephBackend) DetachVolume(_ context.Context, name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v, ok := c.volumes[name]
@@ -159,12 +158,12 @@ func (c *CephBackend) DetachVolume(ctx context.Context, name string) error {
 		return fmt.Errorf("ceph: volume %q not found", name)
 	}
 	v.NodeID = ""
-	v.State = fsm.StateAvailable
+	v.State = storage.StateAvailable
 	v.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
-func (c *CephBackend) HealthCheck(ctx context.Context) error {
+func (c *CephBackend) HealthCheck(_ context.Context) error {
 	_, err := c.conn.GetClusterStats()
 	if err != nil {
 		return fmt.Errorf("ceph health check: %w", err)
@@ -172,8 +171,7 @@ func (c *CephBackend) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-func (c *CephBackend) BackendName() string    { return "ceph" }
-func (c *CephBackend) ConsistencyMode() string { return c.cfg.Consistency }
+func (c *CephBackend) BackendName() string { return "ceph" }
 
 func (c *CephBackend) Close(_ context.Context) error {
 	c.ioctx.Destroy()

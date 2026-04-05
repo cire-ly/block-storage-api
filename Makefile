@@ -33,7 +33,7 @@ migrate:
 	DATABASE_URL=$(DATABASE_URL) go run ./cmd/api -migrate-only
 
 migrate-down:
-	migrate -path db/migrations -database "$(DATABASE_URL)" down 1
+	migrate -path internal/db/migrations -database "$(DATABASE_URL)" down 1
 
 # ── Docker ───────────────────────────────────────────────────────────────────
 

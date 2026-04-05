@@ -11,7 +11,7 @@ import (
 
 // RunMigrations applies all pending up migrations.
 func RunMigrations(databaseURL string) error {
-	m, err := migrate.New("file://db/migrations", databaseURL)
+	m, err := migrate.New("file://internal/db/migrations", databaseURL)
 	if err != nil {
 		return fmt.Errorf("migrate.New: %w", err)
 	}

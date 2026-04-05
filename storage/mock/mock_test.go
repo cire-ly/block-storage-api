@@ -9,7 +9,7 @@ import (
 )
 
 func newBackend() *mock.MockBackend {
-	return mock.New("cp")
+	return mock.New()
 }
 
 func TestCreateVolume(t *testing.T) {
@@ -158,17 +158,6 @@ func TestDeleteVolumeNotFound(t *testing.T) {
 func TestHealthCheck(t *testing.T) {
 	if err := newBackend().HealthCheck(context.Background()); err != nil {
 		t.Errorf("HealthCheck: %v", err)
-	}
-}
-
-func TestConsistencyMode(t *testing.T) {
-	cp := mock.New("cp")
-	if cp.ConsistencyMode() != "cp" {
-		t.Errorf("expected cp, got %q", cp.ConsistencyMode())
-	}
-	ap := mock.New("ap")
-	if ap.ConsistencyMode() != "ap" {
-		t.Errorf("expected ap, got %q", ap.ConsistencyMode())
 	}
 }
 

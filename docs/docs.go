@@ -37,19 +37,19 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/api.listResponse"
+                            "$ref": "#/definitions/volume.listResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
             },
             "post": {
-                "description": "Creates a new block storage volume. The volume goes through PENDING → CREATING → AVAILABLE states.",
+                "description": "Creates a new block storage volume. The volume transitions PENDING → CREATING → AVAILABLE asynchronously.",
                 "consumes": [
                     "application/json"
                 ],
@@ -67,7 +67,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/api.createVolumeRequest"
+                            "$ref": "#/definitions/volume.createVolumeRequest"
                         }
                     }
                 ],
@@ -75,25 +75,25 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/api.volumeResponse"
+                            "$ref": "#/definitions/volume.volumeResponse"
                         }
                     },
                     "400": {
                         "description": "Invalid request",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "409": {
                         "description": "Volume already exists",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "500": {
                         "description": "Internal error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
@@ -122,25 +122,25 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/api.volumeResponse"
+                            "$ref": "#/definitions/volume.volumeResponse"
                         }
                     },
                     "404": {
                         "description": "Volume not found",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
             },
             "delete": {
-                "description": "Deletes an available volume. Transition: AVAILABLE → DELETING → DELETED. Returns 409 if volume is attached.",
+                "description": "Deletes an available volume. Transition: AVAILABLE → DELETING → DELETED (async). Returns 409 if attached.",
                 "produces": [
                     "application/json"
                 ],
@@ -158,25 +158,25 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "204": {
-                        "description": "No content"
+                    "202": {
+                        "description": "Accepted"
                     },
                     "404": {
                         "description": "Volume not found",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "409": {
                         "description": "Invalid FSM transition (e.g. volume is attached)",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
@@ -184,7 +184,7 @@ const docTemplate = `{
         },
         "/api/v1/volumes/{name}/attach": {
             "put": {
-                "description": "Attaches an available volume to a compute node. Transition: AVAILABLE → ATTACHING → ATTACHED.",
+                "description": "Attaches an available volume to a compute node. Transition: AVAILABLE → ATTACHING → ATTACHED (async).",
                 "consumes": [
                     "application/json"
                 ],
@@ -209,39 +209,39 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/api.attachVolumeRequest"
+                            "$ref": "#/definitions/volume.attachVolumeRequest"
                         }
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/api.volumeResponse"
+                            "$ref": "#/definitions/volume.volumeResponse"
                         }
                     },
                     "400": {
                         "description": "Invalid request",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "404": {
                         "description": "Volume not found",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "409": {
                         "description": "Invalid FSM transition",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
@@ -249,7 +249,7 @@ const docTemplate = `{
         },
         "/api/v1/volumes/{name}/detach": {
             "put": {
-                "description": "Detaches an attached volume. Transition: ATTACHED → DETACHING → AVAILABLE.",
+                "description": "Detaches an attached volume. Transition: ATTACHED → DETACHING → AVAILABLE (async).",
                 "produces": [
                     "application/json"
                 ],
@@ -267,28 +267,75 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
-                            "$ref": "#/definitions/api.volumeResponse"
+                            "$ref": "#/definitions/volume.volumeResponse"
                         }
                     },
                     "404": {
                         "description": "Volume not found",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "409": {
                         "description": "Invalid FSM transition",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/api.errResponse"
+                            "$ref": "#/definitions/volume.errResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/volumes/{name}/reset": {
+            "post": {
+                "description": "Resets a volume from the terminal error state back to pending, clearing the retry counter.\nReturns 409 if the volume is not in the error state.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "volumes"
+                ],
+                "summary": "Reset a volume from error state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Volume name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/volume.volumeResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Volume not found",
+                        "schema": {
+                            "$ref": "#/definitions/volume.errResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Volume not in error state",
+                        "schema": {
+                            "$ref": "#/definitions/volume.errResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/volume.errResponse"
                         }
                     }
                 }
@@ -296,7 +343,7 @@ const docTemplate = `{
         },
         "/healthz": {
             "get": {
-                "description": "Returns the health status of the API and the storage backend. Returns 503 in CP mode if the backend is degraded.",
+                "description": "Returns the health status of the API and storage backend.",
                 "produces": [
                     "application/json"
                 ],
@@ -308,13 +355,13 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/api.healthResponse"
+                            "$ref": "#/definitions/volume.healthResponse"
                         }
                     },
                     "503": {
-                        "description": "Backend degraded (CP mode)",
+                        "description": "Backend degraded",
                         "schema": {
-                            "$ref": "#/definitions/api.healthResponse"
+                            "$ref": "#/definitions/volume.healthResponse"
                         }
                     }
                 }
@@ -322,7 +369,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "api.attachVolumeRequest": {
+        "volume.attachVolumeRequest": {
             "description": "Attach volume request",
             "type": "object",
             "properties": {
@@ -332,7 +379,7 @@ const docTemplate = `{
                 }
             }
         },
-        "api.createVolumeRequest": {
+        "volume.createVolumeRequest": {
             "description": "Create volume request",
             "type": "object",
             "properties": {
@@ -346,7 +393,7 @@ const docTemplate = `{
                 }
             }
         },
-        "api.errResponse": {
+        "volume.errResponse": {
             "description": "Error response",
             "type": "object",
             "properties": {
@@ -356,17 +403,13 @@ const docTemplate = `{
                 }
             }
         },
-        "api.healthResponse": {
+        "volume.healthResponse": {
             "description": "Health check response",
             "type": "object",
             "properties": {
                 "backend": {
                     "type": "string",
                     "example": "mock"
-                },
-                "consistency_mode": {
-                    "type": "string",
-                    "example": "cp"
                 },
                 "status": {
                     "type": "string",
@@ -378,7 +421,7 @@ const docTemplate = `{
                 }
             }
         },
-        "api.listResponse": {
+        "volume.listResponse": {
             "description": "List of volumes",
             "type": "object",
             "properties": {
@@ -389,12 +432,12 @@ const docTemplate = `{
                 "volumes": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/api.volumeResponse"
+                        "$ref": "#/definitions/volume.volumeResponse"
                     }
                 }
             }
         },
-        "api.volumeResponse": {
+        "volume.volumeResponse": {
             "description": "Volume resource",
             "type": "object",
             "properties": {
@@ -452,7 +495,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Block Storage API",
-	Description:      "Pluggable block storage API — Ceph, Lustre, NVMe-oF backends with FSM volume lifecycle.\nDemo project for Scaleway Senior Software Engineer application.",
+	Description:      "Error response",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",
