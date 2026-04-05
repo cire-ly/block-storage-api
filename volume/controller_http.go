@@ -4,7 +4,6 @@
 //	@title			Block Storage API
 //	@version		1.0.0
 //	@description	Pluggable block storage API — Ceph, Lustre backends with FSM volume lifecycle.
-//	@description	Demo project for Scaleway Senior Software Engineer application.
 //
 //	@contact.name	Ciré LY
 //	@contact.url	https://github.com/cire-ly/block-storage-api

@@ -18,7 +18,7 @@ WORKDIR /app
 
 # Ca binaire uniquement
 COPY --from=builder /app/block-storage-api .
-COPY --from=builder /app/db/migrations ./db/migrations
+COPY --from=builder /app/internal/db/migrations ./internal/db/migrations
 
 EXPOSE 8080
 
