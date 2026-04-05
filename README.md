@@ -2,7 +2,7 @@
 
 > Pluggable block storage API in Go — Ceph backend with FSM volume lifecycle and retry policy.
 
-[![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/ci.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/ci.yml)
+[![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml)
 [![Go Version](https://img.shields.io/badge/go-1.24-00ADD8?logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cire-ly/block-storage-api)](https://goreportcard.com/report/github.com/cire-ly/block-storage-api)
