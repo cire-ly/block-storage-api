@@ -328,28 +328,6 @@ make lint         # golangci-lint
 make migrate      # apply SQL migrations
 make migrate-down # rollback last migration
 ```
-
-### Test results
-
-```
-ok   config
-ok   storage/mock
-ok   transport/nvmeof
-ok   volume
-ok   volume/repository
-```
-
-### Coverage targets
-
-| Package | Target |
-|---------|--------|
-| `volume/fsm` | 100% |
-| `storage/mock` | ≥ 83% |
-| `volume/controller_http` | ≥ 78% |
-| `volume/application` | ≥ 80% |
-| `config` | ≥ 90% |
-| `storage/ceph` | excluded (requires live cluster) |
-
 ---
 
 ## Deployment
