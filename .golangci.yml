@@ -11,6 +11,9 @@ linters:
     - govet
     - ineffassign
     - unused
+
+formatters:
+  enable:
     - gofmt
 
 issues:
