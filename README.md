@@ -29,7 +29,7 @@ curl -s http://163.172.144.70:8080/healthz | jq
 
 | Component | Choice |
 |-----------|--------|
-| Language | Go 1.24 |
+| Language | Go 1.26 |
 | Router | [chi v5](https://github.com/go-chi/chi) |
 | FSM | [looplab/fsm](https://github.com/looplab/fsm) |
 | Database | PostgreSQL (pgx v5) |
