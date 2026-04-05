@@ -13,12 +13,11 @@
 
 Deployed on a **Scaleway DEV1-S instance** (Paris, fr-par-1):
 
-| Endpoint | URL |
+|| Endpoint | URL |
 |----------|-----|
 | Health check | http://163.172.144.70:8080/healthz |
 | Swagger UI | http://163.172.144.70:8080/swagger/index.html |
 | Grafana (logs) | http://163.172.144.70:3000 |
-| API base | http://163.172.144.70:8080/api/v1 |
 
 ```bash
 curl -s http://163.172.144.70:8080/healthz | jq
