@@ -118,6 +118,7 @@ type fakeBackend struct {
 	attachErr error
 	detachErr error
 	healthErr error
+	getErr    error // non-nil simulates backend unreachable (distinct from not-found)
 }
 
 func newFakeBackend() *fakeBackend {
@@ -156,12 +157,17 @@ func (b *fakeBackend) ListVolumes(_ context.Context) ([]*storage.Volume, error) 
 	return out, nil
 }
 
+// GetVolume returns nil, nil when the volume is not in the map (not-found),
+// and nil, getErr when getErr is set (backend unreachable).
 func (b *fakeBackend) GetVolume(_ context.Context, name string) (*storage.Volume, error) {
+	if b.getErr != nil {
+		return nil, b.getErr
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	v, ok := b.volumes[name]
 	if !ok {
-		return nil, fmt.Errorf("not found: %q", name)
+		return nil, nil
 	}
 	cp := *v
 	return &cp, nil
@@ -444,7 +450,7 @@ func TestDetachVolumeNotFound(t *testing.T) {
 	}
 }
 
-func TestResetVolumeSuccess(t *testing.T) {
+func TestReconcileVolumeToAvailable(t *testing.T) {
 	ctx := context.Background()
 	db := newFakeDB()
 	backend := newFakeBackend()
@@ -455,30 +461,87 @@ func TestResetVolumeSuccess(t *testing.T) {
 	if _, err := app.CreateVolume(ctx, "vol", 10); err != nil {
 		t.Fatal(err)
 	}
-	// Wait for terminal error state (MaxAttempts=1 so it fails fast).
 	waitState(t, db, "vol", StateError, 3*time.Second)
 
-	if err := app.ResetVolume(ctx, "vol"); err != nil {
-		t.Fatalf("ResetVolume: %v", err)
-	}
+	// Fix backend: volume now exists and is not attached.
+	backend.createErr = nil
+	backend.mu.Lock()
+	backend.volumes["vol"] = &storage.Volume{Name: "vol", SizeMB: 10, State: storage.StateAvailable}
+	backend.mu.Unlock()
 
-	v, _ := db.LoadVolume(ctx, "vol")
-	if v.State != StatePending {
-		t.Errorf("State after reset = %q, want pending", v.State)
+	vol, err := app.ReconcileVolume(ctx, "vol")
+	if err != nil {
+		t.Fatalf("ReconcileVolume: %v", err)
+	}
+	if vol.State != StateAvailable {
+		t.Errorf("State = %q, want available", vol.State)
 	}
 }
 
-func TestResetVolumeNotFound(t *testing.T) {
+func TestReconcileVolumeToPending(t *testing.T) {
+	ctx := context.Background()
+	db := newFakeDB()
+	backend := newFakeBackend()
+	backend.createErr = errors.New("backend error")
+	app := newApp(db, backend)
+	app.policy = RetryPolicy{MaxAttempts: 1, InitialWait: 1 * time.Millisecond, Multiplier: 1.0, MaxWait: 1 * time.Millisecond}
+
+	if _, err := app.CreateVolume(ctx, "vol", 10); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, db, "vol", StateError, 3*time.Second)
+
+	// Backend has no record of the volume (GetVolume returns nil, nil) — reconcile to pending.
+	vol, err := app.ReconcileVolume(ctx, "vol")
+	if err != nil {
+		t.Fatalf("ReconcileVolume: %v", err)
+	}
+	if vol.State != StatePending {
+		t.Errorf("State = %q, want pending", vol.State)
+	}
+}
+
+func TestReconcileVolumeToAttached(t *testing.T) {
+	ctx := context.Background()
+	db := newFakeDB()
+	backend := newFakeBackend()
+	backend.createErr = errors.New("backend error")
+	app := newApp(db, backend)
+	app.policy = RetryPolicy{MaxAttempts: 1, InitialWait: 1 * time.Millisecond, Multiplier: 1.0, MaxWait: 1 * time.Millisecond}
+
+	if _, err := app.CreateVolume(ctx, "vol", 10); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, db, "vol", StateError, 3*time.Second)
+
+	// Backend reports volume as attached to node-1.
+	backend.mu.Lock()
+	backend.volumes["vol"] = &storage.Volume{Name: "vol", SizeMB: 10, State: storage.StateAttached, NodeID: "node-1"}
+	backend.mu.Unlock()
+
+	vol, err := app.ReconcileVolume(ctx, "vol")
+	if err != nil {
+		t.Fatalf("ReconcileVolume: %v", err)
+	}
+	if vol.State != StateAttached {
+		t.Errorf("State = %q, want attached", vol.State)
+	}
+	if vol.NodeID != "node-1" {
+		t.Errorf("NodeID = %q, want node-1", vol.NodeID)
+	}
+}
+
+func TestReconcileVolumeNotFound(t *testing.T) {
 	ctx := context.Background()
 	app := newApp(newFakeDB(), newFakeBackend())
 
-	err := app.ResetVolume(ctx, "ghost")
+	_, err := app.ReconcileVolume(ctx, "ghost")
 	if !errors.Is(err, ErrVolumeNotFound) {
 		t.Errorf("expected ErrVolumeNotFound, got %v", err)
 	}
 }
 
-func TestResetVolumeInvalidTransition(t *testing.T) {
+func TestReconcileVolumeInvalidTransition(t *testing.T) {
 	ctx := context.Background()
 	db := newFakeDB()
 	app := newApp(db, newFakeBackend())
@@ -486,10 +549,32 @@ func TestResetVolumeInvalidTransition(t *testing.T) {
 	if _, err := app.CreateVolume(ctx, "vol", 10); err != nil {
 		t.Fatal(err)
 	}
-	// Volume is in "creating" — reset only works from "error".
-	err := app.ResetVolume(ctx, "vol")
+	// Volume is in "creating" — reconcile only works from "error".
+	_, err := app.ReconcileVolume(ctx, "vol")
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got %v", err)
+	}
+}
+
+func TestReconcileVolumeBackendUnavailable(t *testing.T) {
+	ctx := context.Background()
+	db := newFakeDB()
+	backend := newFakeBackend()
+	backend.createErr = errors.New("backend error")
+	app := newApp(db, backend)
+	app.policy = RetryPolicy{MaxAttempts: 1, InitialWait: 1 * time.Millisecond, Multiplier: 1.0, MaxWait: 1 * time.Millisecond}
+
+	if _, err := app.CreateVolume(ctx, "vol", 10); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, db, "vol", StateError, 3*time.Second)
+
+	// Simulate backend being unreachable.
+	backend.getErr = errors.New("connection refused")
+
+	_, err := app.ReconcileVolume(ctx, "vol")
+	if !errors.Is(err, ErrBackendUnavailable) {
+		t.Errorf("expected ErrBackendUnavailable, got %v", err)
 	}
 }
 

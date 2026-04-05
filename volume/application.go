@@ -22,10 +22,11 @@ const (
 
 // Sentinel errors used for HTTP status mapping.
 var (
-	ErrVolumeNotFound    = errors.New("volume not found")
-	ErrVolumeExists      = errors.New("volume already exists")
-	ErrInvalidTransition = errors.New("invalid state transition")
-	ErrInvalidSize       = errors.New("size must be > 0 MB")
+	ErrVolumeNotFound      = errors.New("volume not found")
+	ErrVolumeExists        = errors.New("volume already exists")
+	ErrInvalidTransition   = errors.New("invalid state transition")
+	ErrInvalidSize         = errors.New("size must be > 0 MB")
+	ErrBackendUnavailable  = errors.New("backend unavailable")
 )
 
 // application implements ApplicationContract.
@@ -237,19 +238,74 @@ func (a *application) DetachVolume(ctx context.Context, name string) error {
 	return nil
 }
 
-// ResetVolume transitions a volume from the terminal error state back to pending.
-// Returns ErrInvalidTransition when the volume is not in the error state.
-func (a *application) ResetVolume(ctx context.Context, name string) error {
-	ctx, span := a.tracer.Start(ctx, "application.ResetVolume")
+// ReconcileVolume aligns the FSM state with the real backend state.
+// Only valid when the volume is in the error state — returns ErrInvalidTransition otherwise.
+// Decision logic:
+//   - backend unavailable          → keeps error state, returns ErrBackendUnavailable
+//   - volume absent from backend   → FSM → pending
+//   - volume present, NodeID != "" → FSM → attached (preserves NodeID)
+//   - volume present, NodeID == "" → FSM → available
+//
+// Resets the retry counter and records a volume_event for audit.
+func (a *application) ReconcileVolume(ctx context.Context, name string) (*storage.Volume, error) {
+	ctx, span := a.tracer.Start(ctx, "application.ReconcileVolume")
 	defer span.End()
 
 	v, err := a.loadOrNotFound(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// error → pending
-	return a.applyEvent(ctx, v, EventReset)
+	if v.State != StateError {
+		return nil, fmt.Errorf("%w: reconcile requires error state, got %q", ErrInvalidTransition, v.State)
+	}
+
+	bCtx, bCancel := context.WithTimeout(ctx, backendTimeout)
+	real, backendErr := a.backend.GetVolume(bCtx, v.Name)
+	bCancel()
+
+	// A non-nil error means the backend is unreachable (network failure, etc.).
+	// A nil result with no error means the volume does not exist in the backend.
+	if backendErr != nil {
+		return nil, fmt.Errorf("%w: %s", ErrBackendUnavailable, backendErr)
+	}
+
+	fromState := v.State
+
+	if real == nil {
+		// Volume does not exist in backend — reset to pending.
+		v.State = StatePending
+		v.NodeID = ""
+	} else if real.NodeID != "" {
+		// Volume is attached on a node.
+		v.State = StateAttached
+		v.NodeID = real.NodeID
+	} else {
+		// Volume exists but is not attached.
+		v.State = StateAvailable
+		v.NodeID = ""
+	}
+
+	v.UpdatedAt = time.Now().UTC()
+
+	dbCtx, dbCancel := context.WithTimeout(ctx, dbTimeout)
+	defer dbCancel()
+
+	if err := a.db.UpdateVolume(dbCtx, v); err != nil {
+		return nil, fmt.Errorf("persist reconciled state: %w", err)
+	}
+
+	if saveErr := a.db.SaveEvent(dbCtx, VolumeEvent{
+		VolumeID:  v.ID,
+		Event:     "reconcile",
+		FromState: fromState,
+		ToState:   v.State,
+	}); saveErr != nil {
+		loggerFromCtx(ctx, a.logger).Warn("failed to save reconcile event",
+			"err", saveErr, "volume", v.Name)
+	}
+
+	return copyVolume(v), nil
 }
 
 func (a *application) HealthCheck(ctx context.Context) error {

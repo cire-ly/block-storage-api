@@ -105,7 +105,7 @@ func (c *httpController) registerRoutes(r chi.Router) {
 		r.Put("/volumes/{name}/attach", c.attachVolume)
 		r.Put("/volumes/{name}/detach", c.detachVolume)
 		r.Delete("/volumes/{name}", c.deleteVolume)
-		r.Post("/volumes/{name}/reset", c.resetVolume)
+		r.Post("/volumes/{name}/reconcile", c.reconcileVolume)
 	})
 }
 
@@ -200,6 +200,8 @@ func mapAppError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, ErrInvalidSize):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrBackendUnavailable):
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}
@@ -407,10 +409,11 @@ func (c *httpController) deleteVolume(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// resetVolume godoc
+// reconcileVolume godoc
 //
-//	@Summary		Reset a volume from error state
-//	@Description	Resets a volume from the terminal error state back to pending, clearing the retry counter.
+//	@Summary		Reconcile a volume with backend state
+//	@Description	Aligns the FSM state with the real backend state. Only valid when the volume is in the error state.
+//	@Description	Decision logic: backend unavailable → 503; volume absent → pending; volume attached → attached; volume present → available.
 //	@Description	Returns 409 if the volume is not in the error state.
 //	@Tags			volumes
 //	@Produce		json
@@ -418,21 +421,17 @@ func (c *httpController) deleteVolume(w http.ResponseWriter, r *http.Request) {
 //	@Success		200		{object}	volumeResponse
 //	@Failure		404		{object}	errResponse	"Volume not found"
 //	@Failure		409		{object}	errResponse	"Volume not in error state"
+//	@Failure		503		{object}	errResponse	"Backend unavailable"
 //	@Failure		500		{object}	errResponse
-//	@Router			/api/v1/volumes/{name}/reset [post]
-func (c *httpController) resetVolume(w http.ResponseWriter, r *http.Request) {
-	ctx, span := c.tracer.Start(r.Context(), "handler.ResetVolume")
+//	@Router			/api/v1/volumes/{name}/reconcile [post]
+func (c *httpController) reconcileVolume(w http.ResponseWriter, r *http.Request) {
+	ctx, span := c.tracer.Start(r.Context(), "handler.ReconcileVolume")
 	defer span.End()
-	c.recordOp(ctx, "reset")
+	c.recordOp(ctx, "reconcile")
 
 	name := chi.URLParam(r, "name")
 
-	if err := c.app.ResetVolume(ctx, name); err != nil {
-		writeErr(w, mapAppError(err), err.Error())
-		return
-	}
-
-	vol, err := c.app.GetVolume(ctx, name)
+	vol, err := c.app.ReconcileVolume(ctx, name)
 	if err != nil {
 		writeErr(w, mapAppError(err), err.Error())
 		return

@@ -272,10 +272,11 @@ paths:
       summary: Detach a volume from its node
       tags:
       - volumes
-  /api/v1/volumes/{name}/reset:
+  /api/v1/volumes/{name}/reconcile:
     post:
       description: |-
-        Resets a volume from the terminal error state back to pending, clearing the retry counter.
+        Aligns the FSM state with the real backend state. Only valid when the volume is in the error state.
+        Decision logic: backend unavailable → 503; volume absent → pending; volume attached → attached; volume present → available.
         Returns 409 if the volume is not in the error state.
       parameters:
       - description: Volume name
@@ -302,7 +303,11 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/volume.errResponse'
-      summary: Reset a volume from error state
+        "503":
+          description: Backend unavailable
+          schema:
+            $ref: '#/definitions/volume.errResponse'
+      summary: Reconcile a volume with backend state
       tags:
       - volumes
   /healthz:

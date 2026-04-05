@@ -19,13 +19,13 @@ import (
 // -- fake application --------------------------------------------------------
 
 type fakeApp struct {
-	volumes   map[string]*storage.Volume
-	createErr error
-	deleteErr error
-	attachErr error
-	detachErr error
-	resetErr  error
-	healthErr error
+	volumes      map[string]*storage.Volume
+	createErr    error
+	deleteErr    error
+	attachErr    error
+	detachErr    error
+	reconcileErr error
+	healthErr    error
 }
 
 func newFakeApp() *fakeApp {
@@ -91,16 +91,16 @@ func (a *fakeApp) DetachVolume(_ context.Context, name string) error {
 	return nil
 }
 
-func (a *fakeApp) ResetVolume(_ context.Context, name string) error {
-	if a.resetErr != nil {
-		return a.resetErr
+func (a *fakeApp) ReconcileVolume(_ context.Context, name string) (*storage.Volume, error) {
+	if a.reconcileErr != nil {
+		return nil, a.reconcileErr
 	}
 	v, ok := a.volumes[name]
 	if !ok {
-		return fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
+		return nil, fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
 	}
-	v.State = StatePending
-	return nil
+	v.State = StateAvailable
+	return v, nil
 }
 
 func (a *fakeApp) HealthCheck(_ context.Context) error { return a.healthErr }
@@ -319,36 +319,45 @@ func TestHTTPDeleteVolumeConflict(t *testing.T) {
 	}
 }
 
-func TestHTTPResetVolume(t *testing.T) {
+func TestHTTPReconcileVolume(t *testing.T) {
 	app := newFakeApp()
 	app.volumes["vol-01"] = &storage.Volume{ID: "id-1", Name: "vol-01", State: StateError}
 
-	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/vol-01/reset", nil)
+	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/vol-01/reconcile", nil)
 	if rr.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rr.Code)
 	}
 	var resp volumeResponse
 	decodeResp(t, rr, &resp)
-	if resp.State != StatePending {
-		t.Errorf("State = %q, want pending", resp.State)
+	if resp.State != StateAvailable {
+		t.Errorf("State = %q, want available", resp.State)
 	}
 }
 
-func TestHTTPResetVolumeNotFound(t *testing.T) {
+func TestHTTPReconcileVolumeNotFound(t *testing.T) {
 	app := newFakeApp()
-	app.resetErr = ErrVolumeNotFound
-	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/ghost/reset", nil)
+	app.reconcileErr = ErrVolumeNotFound
+	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/ghost/reconcile", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rr.Code)
 	}
 }
 
-func TestHTTPResetVolumeConflict(t *testing.T) {
+func TestHTTPReconcileVolumeConflict(t *testing.T) {
 	app := newFakeApp()
-	app.resetErr = ErrInvalidTransition
-	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/v/reset", nil)
+	app.reconcileErr = ErrInvalidTransition
+	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/v/reconcile", nil)
 	if rr.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rr.Code)
+	}
+}
+
+func TestHTTPReconcileVolumeBackendUnavailable(t *testing.T) {
+	app := newFakeApp()
+	app.reconcileErr = ErrBackendUnavailable
+	rr := httpDo(t, newTestRouter(app), http.MethodPost, "/api/v1/volumes/v/reconcile", nil)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
 	}
 }
 

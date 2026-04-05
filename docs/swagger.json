@@ -288,16 +288,16 @@
                 }
             }
         },
-        "/api/v1/volumes/{name}/reset": {
+        "/api/v1/volumes/{name}/reconcile": {
             "post": {
-                "description": "Resets a volume from the terminal error state back to pending, clearing the retry counter.\nReturns 409 if the volume is not in the error state.",
+                "description": "Aligns the FSM state with the real backend state. Only valid when the volume is in the error state.\nDecision logic: backend unavailable → 503; volume absent → pending; volume attached → attached; volume present → available.\nReturns 409 if the volume is not in the error state.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "volumes"
                 ],
-                "summary": "Reset a volume from error state",
+                "summary": "Reconcile a volume with backend state",
                 "parameters": [
                     {
                         "type": "string",
@@ -328,6 +328,12 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/volume.errResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Backend unavailable",
                         "schema": {
                             "$ref": "#/definitions/volume.errResponse"
                         }

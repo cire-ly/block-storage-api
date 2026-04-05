@@ -40,7 +40,6 @@ const (
 	EventError    = "error"
 	EventRetry    = "retry"
 	EventFail     = "fail"
-	EventReset    = "reset"
 )
 
 // RetryPolicy controls exponential back-off for failed FSM transitions.
@@ -72,7 +71,7 @@ func DefaultRetryPolicy() RetryPolicy {
 //	creating|attaching|detaching|deleting → [error] → *_failed
 //	*_failed → [retry] → original in-progress state
 //	*_failed → [fail] → error (after MaxAttempts)
-//	error → [reset] → pending
+//	error → reconcile via POST /api/v1/volumes/{name}/reconcile
 func NewVolumeFSM(initialState string) *fsm.FSM {
 	return fsm.NewFSM(
 		initialState,
@@ -105,8 +104,6 @@ func NewVolumeFSM(initialState string) *fsm.FSM {
 				},
 				Dst: StateError,
 			},
-			// Terminal error → pending (manual reset)
-			{Name: EventReset, Src: []string{StateError}, Dst: StatePending},
 		},
 		fsm.Callbacks{},
 	)

@@ -21,6 +21,6 @@ type ApplicationContract interface {
 	GetVolume(ctx context.Context, name string) (*storage.Volume, error)
 	AttachVolume(ctx context.Context, name string, nodeID string) error
 	DetachVolume(ctx context.Context, name string) error
-	ResetVolume(ctx context.Context, name string) error
+	ReconcileVolume(ctx context.Context, name string) (*storage.Volume, error)
 	HealthCheck(ctx context.Context) error
 }

@@ -51,7 +51,6 @@ func TestCanTransitionValid(t *testing.T) {
 		{StateDetachingFailed, EventFail},
 		{StateDeletingFailed, EventRetry},
 		{StateDeletingFailed, EventFail},
-		{StateError, EventReset},
 	}
 	for _, tc := range cases {
 		if !CanTransition(tc.state, tc.event) {
@@ -74,6 +73,7 @@ func TestCanTransitionInvalid(t *testing.T) {
 		{StateDeleted, EventCreate},
 		{StateError, EventCreate},
 		{StateError, EventRetry},
+		{StateError, EventFail},
 	}
 	for _, tc := range cases {
 		if CanTransition(tc.state, tc.event) {
@@ -175,18 +175,6 @@ func TestTransitionFailFromFailedStates(t *testing.T) {
 		if got != StateError {
 			t.Errorf("Transition(%q, fail) = %q, want %q", from, got, StateError)
 		}
-	}
-}
-
-func TestTransitionResetFromError(t *testing.T) {
-	ctx := context.Background()
-
-	got, err := Transition(ctx, StateError, EventReset)
-	if err != nil {
-		t.Fatalf("Transition(error, reset): %v", err)
-	}
-	if got != StatePending {
-		t.Errorf("got %q, want %q", got, StatePending)
 	}
 }
 
