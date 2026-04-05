@@ -25,7 +25,9 @@ coverage:
 	@go tool cover -func=coverage.out | tail -1
 
 lint:
-	golangci-lint run ./...
+	@which golangci-lint > /dev/null 2>&1 || \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin latest
+	$(shell go env GOPATH)/bin/golangci-lint run ./... --timeout 5m
 
 # ── Database ─────────────────────────────────────────────────────────────────
 

@@ -22,11 +22,11 @@ const (
 
 // Sentinel errors used for HTTP status mapping.
 var (
-	ErrVolumeNotFound      = errors.New("volume not found")
-	ErrVolumeExists        = errors.New("volume already exists")
-	ErrInvalidTransition   = errors.New("invalid state transition")
-	ErrInvalidSize         = errors.New("size must be > 0 MB")
-	ErrBackendUnavailable  = errors.New("backend unavailable")
+	ErrVolumeNotFound     = errors.New("volume not found")
+	ErrVolumeExists       = errors.New("volume already exists")
+	ErrInvalidTransition  = errors.New("invalid state transition")
+	ErrInvalidSize        = errors.New("size must be > 0 MB")
+	ErrBackendUnavailable = errors.New("backend unavailable")
 )
 
 // application implements ApplicationContract.
