@@ -3,15 +3,14 @@
 > Pluggable block storage API in Go — Ceph backend with FSM volume lifecycle and retry policy.
 > Demo project for **Scaleway Senior Software Engineer** application.
 
-[![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/deploy.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/deploy.yml)
+[![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/ci.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/badge/go-1.24-00ADD8?logo=go)](https://go.dev/)
-[![Coverage](https://codecov.io/gh/cire-ly/block-storage-api/branch/main/graph/badge.svg)](https://codecov.io/gh/cire-ly/block-storage-api)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cire-ly/block-storage-api)](https://goreportcard.com/report/github.com/cire-ly/block-storage-api)
 
 ---
 
-## 🚀 Live demo
+## Live demo
 
 Deployed on a **Scaleway DEV1-S instance** (Paris, fr-par-1):
 
@@ -63,12 +62,12 @@ block-storage-api/
 │   ├── contract.go        # FeatureContract + ApplicationContract
 │   ├── dependency.go      # dependency interfaces (consumer-side)
 │   ├── application.go     # pure business logic — zero transport imports
-│   ├── factory.go         # wiring + LIFO shutdown
+│   ├── factory.go         # wiring + WaitGroup shutdown
 │   ├── controller_http.go # HTTP transport only — zero business logic
 │   ├── fsm.go             # FSM states, transitions, retry policy
 │   └── repository/
 │       ├── postgres.go    # PostgreSQL impl of DatabaseDependency
-│       └── inmemory.go    # in-memory impl for tests
+│       └── inmemory.go    # in-memory impl for local dev
 ├── storage/
 │   ├── backend.go         # VolumeBackend interface + Volume type
 │   ├── mock/              # in-memory backend (default, no deps)
@@ -84,35 +83,72 @@ The `volume/` package is self-contained:
 - **`application.go`** — zero imports from `net/http`, `chi`, or any storage impl
 - **`controller_http.go`** — zero business logic, only HTTP ↔ ApplicationContract
 - **`repository/postgres.go`** — implements `DatabaseDependency`, only known by `setup.go`
-- **`factory.go`** — wires everything, LIFO shutdown via closers
+- **`factory.go`** — wires everything, WaitGroup + LIFO shutdown
 
 ```go
 feat, err := volume.NewVolumeFeature(volume.NewVolumeFeatureParams{
-    Logger:  logger,
-    Backend: storageBackend,
-    DB:      volumeRepo,
-    Tracer:  tracer,
-    Meter:   meter,
-    Router:  router,
+    Logger:      logger,
+    Backend:     storageBackend,
+    DB:          volumeRepo,
+    Tracer:      tracer,
+    Meter:       meter,
+    Router:      router,
+    RetryPolicy: volume.RetryPolicy{MaxAttempts: 3, InitialWait: 500*time.Millisecond, ...},
 })
 ```
 
-### NVMe-oF — transport, not a backend
+### Goroutine lifecycle — WaitGroup
 
-NVMe-oF is a **transport layer** — it exposes an existing volume over the network.
-It does NOT store data and does NOT implement `VolumeBackend`.
+`VolumeFeature` tracks every internal goroutine with a `sync.WaitGroup` to guarantee
+a clean shutdown with no leaks.
 
+```go
+type VolumeFeature struct {
+    wg        sync.WaitGroup     // tracks all internal goroutines
+    cancelCtx context.CancelFunc // cancels them on shutdown
+    ...
+}
 ```
-Ceph RBD ──► NVMe-oF Target ──► Initiator (sees /dev/nvme1n1 as local disk)
+
+**Shutdown sequence** (`VolumeFeature.Close`):
+
+1. `f.cancelCtx()` — signals all goroutines via `ctx.Done()`
+2. `f.wg.Wait()` — blocks until every goroutine has exited (bounded by caller deadline)
+3. LIFO closers — remaining resources closed in reverse init order
+
+**Retry goroutines** check `ctx.Done()` at two points:
+
+```go
+for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+    select {
+    case <-ctx.Done():
+        return // canceled before attempt — stop silently
+    default:
+    }
+
+    err := op(ctx)
+    if err == nil { return } // success
+
+    select {
+    case <-ctx.Done():
+        return // canceled during backoff — stop silently
+    case <-time.After(backoff):
+    }
+}
 ```
 
-### Ceph CAP strategy
+**Startup reconciliation** runs each stuck volume in parallel:
 
-Ceph is **CP by default** — managed at pool level, not application level:
-
-```bash
-ceph osd pool set rbd-demo min_size 2  # refuse writes if quorum not met
-ceph osd pool set rbd-demo size 3
+```go
+var wg sync.WaitGroup
+for _, vol := range transitionalVolumes {
+    wg.Add(1)
+    go func(v *storage.Volume) {
+        defer wg.Done()
+        f.reconcileVolume(ctx, v)
+    }(vol)
+}
+wg.Wait()
 ```
 
 ---
@@ -149,18 +185,36 @@ stateDiagram-v2
     error --> pending: reset
 ```
 
+### States
+
+| State | Description |
+|-------|-------------|
+| `pending` | Volume requested |
+| `creating` | Backend provisioning in progress |
+| `creating_failed` | Provisioning failed — retry pending |
+| `available` | Ready for use |
+| `attaching` | Attach to node in progress |
+| `attaching_failed` | Attach failed — retry pending |
+| `attached` | Mounted on a node |
+| `detaching` | Detach in progress |
+| `detaching_failed` | Detach failed — retry pending |
+| `deleting` | Deletion in progress |
+| `deleting_failed` | Deletion failed — retry pending |
+| `deleted` | Removed |
+| `error` | Terminal failure — manual `reset` required |
+
 ### Retry policy
 
-Every in-progress state has a `*_failed` intermediate state with exponential backoff:
+Every in-progress state has a `*_failed` intermediate with exponential backoff:
 
-| Parameter | Default |
-|-----------|---------|
-| `MaxAttempts` | 3 |
-| `InitialWait` | 500ms |
-| `Multiplier` | 2.0 |
-| `MaxWait` | 10s |
+| Parameter | Default | Env variable |
+|-----------|---------|--------------|
+| `MaxAttempts` | `3` | `VOLUME_RETRY_MAX_ATTEMPTS` |
+| `InitialWait` | `500ms` | `VOLUME_RETRY_INITIAL_WAIT` |
+| `Multiplier` | `2.0` | `VOLUME_RETRY_MULTIPLIER` |
+| `MaxWait` | `10s` | `VOLUME_RETRY_MAX_WAIT` |
 
-Delays: 500ms → 1s → 2s → `error` after MaxAttempts.
+Delays: 500ms → 1s → 2s → terminal `error` after `MaxAttempts`.
 
 Every FSM transition is persisted in `volume_events` (audit trail for RCA).
 
@@ -260,6 +314,10 @@ go run -tags ceph ./cmd/api
 | `OTEL_EXPORTER` | `stdout` | `stdout` \| `jaeger` |
 | `OTEL_JAEGER_ENDPOINT` | `http://localhost:4318/v1/traces` | OTLP HTTP endpoint |
 | `OTEL_SERVICE_NAME` | `block-storage-api` | OTel service name |
+| `VOLUME_RETRY_MAX_ATTEMPTS` | `3` | Max retry attempts before `error` state |
+| `VOLUME_RETRY_INITIAL_WAIT` | `500ms` | Initial backoff delay |
+| `VOLUME_RETRY_MULTIPLIER` | `2.0` | Exponential backoff multiplier |
+| `VOLUME_RETRY_MAX_WAIT` | `10s` | Maximum backoff delay |
 
 ---
 
@@ -340,5 +398,6 @@ Context flows through every layer — never dropped or replaced with `context.Ba
 | Health check | 3s |
 | Graceful shutdown | 10s |
 
-Retry goroutines check `ctx.Done()` before each attempt and during backoff.
-The HTTP server uses `BaseContext` for graceful shutdown propagation.
+The HTTP server's `BaseContext` is set to the application lifecycle context (`appCtx`).
+When SIGTERM fires, `appCtx` is canceled, propagating through all request contexts to
+retry goroutines, which stop at the next `ctx.Done()` check.
