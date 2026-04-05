@@ -11,15 +11,22 @@ import (
 func setEnv(t *testing.T, pairs ...string) {
 	t.Helper()
 	for i := 0; i < len(pairs); i += 2 {
-		old, existed := os.LookupEnv(pairs[i])
+		key, val := pairs[i], pairs[i+1]
+		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
 			if existed {
-				os.Setenv(pairs[i], old)
+				if err := os.Setenv(key, old); err != nil {
+					t.Errorf("os.Setenv %s: %v", key, err)
+				}
 			} else {
-				os.Unsetenv(pairs[i])
+				if err := os.Unsetenv(key); err != nil {
+					t.Errorf("os.Unsetenv %s: %v", key, err)
+				}
 			}
 		})
-		os.Setenv(pairs[i], pairs[i+1])
+		if err := os.Setenv(key, val); err != nil {
+			t.Fatalf("os.Setenv %s: %v", key, err)
+		}
 	}
 }
 

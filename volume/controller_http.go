@@ -497,7 +497,7 @@ func (c *httpController) requestLogger(next http.Handler) http.Handler {
 		// Enrich the logger with trace_id so every downstream log carries it.
 		// *slog.Logger implements LoggerDependency, so the type assertion is safe
 		// when setup.go passes rr.logger (*slog.Logger) as the dependency.
-		var enriched LoggerDependency = c.logger
+		enriched := c.logger
 		if sl, ok := c.logger.(*slog.Logger); ok {
 			enriched = sl.With("trace_id", traceID, "method", r.Method, "path", r.URL.Path)
 		}

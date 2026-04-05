@@ -145,8 +145,8 @@ func (m *MockBackend) DetachVolume(_ context.Context, name string) error {
 }
 
 func (m *MockBackend) HealthCheck(_ context.Context) error { return nil }
-func (m *MockBackend) BackendName() string                  { return "mock" }
-func (m *MockBackend) Close(_ context.Context) error        { return nil }
+func (m *MockBackend) BackendName() string                 { return "mock" }
+func (m *MockBackend) Close(_ context.Context) error       { return nil }
 
 func copyVolume(v *storage.Volume) *storage.Volume {
 	cp := *v

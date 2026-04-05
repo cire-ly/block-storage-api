@@ -15,7 +15,8 @@ func RunMigrations(databaseURL string) error {
 	if err != nil {
 		return fmt.Errorf("migrate.New: %w", err)
 	}
-	defer m.Close()
+	// Close returns source and database errors separately; both are ignored on defer.
+	defer func() { _, _ = m.Close() }()
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate.Up: %w", err)

@@ -78,24 +78,24 @@ func NewVolumeFSM(initialState string) *fsm.FSM {
 		initialState,
 		fsm.Events{
 			// Normal progression
-			{Name: EventCreate,   Src: []string{StatePending},   Dst: StateCreating},
-			{Name: EventReady,    Src: []string{StateCreating},  Dst: StateAvailable},
-			{Name: EventAttach,   Src: []string{StateAvailable}, Dst: StateAttaching},
+			{Name: EventCreate, Src: []string{StatePending}, Dst: StateCreating},
+			{Name: EventReady, Src: []string{StateCreating}, Dst: StateAvailable},
+			{Name: EventAttach, Src: []string{StateAvailable}, Dst: StateAttaching},
 			{Name: EventAttached, Src: []string{StateAttaching}, Dst: StateAttached},
-			{Name: EventDetach,   Src: []string{StateAttached},  Dst: StateDetaching},
+			{Name: EventDetach, Src: []string{StateAttached}, Dst: StateDetaching},
 			{Name: EventDetached, Src: []string{StateDetaching}, Dst: StateAvailable},
-			{Name: EventDelete,   Src: []string{StateAvailable}, Dst: StateDeleting},
-			{Name: EventDeleted,  Src: []string{StateDeleting},  Dst: StateDeleted},
+			{Name: EventDelete, Src: []string{StateAvailable}, Dst: StateDeleting},
+			{Name: EventDeleted, Src: []string{StateDeleting}, Dst: StateDeleted},
 			// In-progress → failed
-			{Name: EventError, Src: []string{StateCreating},  Dst: StateCreatingFailed},
+			{Name: EventError, Src: []string{StateCreating}, Dst: StateCreatingFailed},
 			{Name: EventError, Src: []string{StateAttaching}, Dst: StateAttachingFailed},
 			{Name: EventError, Src: []string{StateDetaching}, Dst: StateDetachingFailed},
-			{Name: EventError, Src: []string{StateDeleting},  Dst: StateDeletingFailed},
+			{Name: EventError, Src: []string{StateDeleting}, Dst: StateDeletingFailed},
 			// Failed → retry (back to in-progress)
-			{Name: EventRetry, Src: []string{StateCreatingFailed},  Dst: StateCreating},
+			{Name: EventRetry, Src: []string{StateCreatingFailed}, Dst: StateCreating},
 			{Name: EventRetry, Src: []string{StateAttachingFailed}, Dst: StateAttaching},
 			{Name: EventRetry, Src: []string{StateDetachingFailed}, Dst: StateDetaching},
-			{Name: EventRetry, Src: []string{StateDeletingFailed},  Dst: StateDeleting},
+			{Name: EventRetry, Src: []string{StateDeletingFailed}, Dst: StateDeleting},
 			// Failed → terminal error (MaxAttempts exhausted)
 			{
 				Name: EventFail,

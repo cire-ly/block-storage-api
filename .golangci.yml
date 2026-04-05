@@ -1,0 +1,26 @@
+run:
+  timeout: 5m
+  go: "1.24"
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - unused
+    - gofmt
+    - goimports
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+
+issues:
+  exclude-rules:
+    # Test files — allow unchecked errors on t.Helper patterns
+    - path: _test\.go
+      linters:
+        - errcheck

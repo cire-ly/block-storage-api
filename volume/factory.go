@@ -30,8 +30,8 @@ type NewVolumeFeatureParams struct {
 // VolumeFeature is the wired volume feature, implementing FeatureContract.
 type VolumeFeature struct {
 	app       *application
-	wg        sync.WaitGroup             // tracks all internal goroutines
-	cancelCtx context.CancelFunc         // cancels the internal lifecycle context
+	wg        sync.WaitGroup     // tracks all internal goroutines
+	cancelCtx context.CancelFunc // cancels the internal lifecycle context
 	closers   []interface{ Close(context.Context) error }
 }
 

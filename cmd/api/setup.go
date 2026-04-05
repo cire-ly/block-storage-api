@@ -27,9 +27,9 @@ import (
 // ResourcesRegistry owns every long-lived resource and manages their lifecycle.
 // Startup order is explicit; shutdown is LIFO via closers.
 type ResourcesRegistry struct {
-	config  *config.Config
-	logger  *slog.Logger
-	db      struct {
+	config *config.Config
+	logger *slog.Logger
+	db     struct {
 		pool *pgxpool.Pool
 		repo volume.DatabaseDependency
 	}

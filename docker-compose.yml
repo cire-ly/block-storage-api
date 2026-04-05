@@ -1,37 +1,67 @@
 version: "3.9"
 
-services:
+ervices:
   api:
-    build: .
+    image: ghcr.io/cire-ly/block-storage-api:latest
     ports:
       - "8080:8080"
     environment:
-      STORAGE_BACKEND: mock
-      DATABASE_URL: postgres://blockstore:blockstore@postgres:5432/blockstore?sslmode=disable
-      PORT: "8080"
-      ENV: development
-      OTEL_EXPORTER: stdout
-      OTEL_SERVICE_NAME: block-storage-api
+      - STORAGE_BACKEND=mock
+      - CONSISTENCY_STRATEGY=cp
+      - DATABASE_URL=postgres://blockstore:blockstore@db:5432/blockstore?sslmode=disable
+      - PORT=8080
+      - ENV=production
+      - OTEL_EXPORTER=stdout
+      - OTEL_SERVICE_NAME=block-storage-api
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
-    restart: on-failure
+    restart: unless-stopped
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://127.0.0.1:3100/loki/api/v1/push"
+        loki-external-labels: "service=block-storage-api"
 
-  postgres:
+  db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: blockstore
-      POSTGRES_PASSWORD: blockstore
-      POSTGRES_DB: blockstore
-    ports:
-      - "5432:5432"
+      - POSTGRES_USER=blockstore
+      - POSTGRES_PASSWORD=blockstore
+      - POSTGRES_DB=blockstore
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U blockstore"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 5
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - lokidata:/loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=scaleway2024
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - loki
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  lokidata:
+  grafanadata:
