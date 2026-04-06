@@ -17,7 +17,7 @@ Deployed on a **Scaleway DEV1-S instance** (Paris, fr-par-1):
 |----------|-----|
 | Health check | http://163.172.144.70:8080/healthz |
 | Swagger UI | http://163.172.144.70:8080/swagger/index.html |
-| Grafana (logs) | http://163.172.144.70:3000 |
+| Grafana (logs) | http://163.172.144.70:3000/d/e0737087-df70-49b2-910b-eda4adcc2893/block-storage-api-monitoring?orgId=1&from=now-30m&to=now |
 
 ```bash
 curl -s http://163.172.144.70:8080/healthz | jq
