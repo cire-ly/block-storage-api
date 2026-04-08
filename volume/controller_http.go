@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -106,6 +107,7 @@ func (c *httpController) registerRoutes(r chi.Router) {
 		r.Put("/volumes/{name}/detach", c.detachVolume)
 		r.Delete("/volumes/{name}", c.deleteVolume)
 		r.Post("/volumes/{name}/reconcile", c.reconcileVolume)
+		r.Get("/volumes/{name}/events", c.streamVolumeEvents)
 	})
 }
 
@@ -438,6 +440,67 @@ func (c *httpController) reconcileVolume(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, toResponse(vol))
+}
+
+// streamVolumeEvents godoc
+//
+//	@Summary		Stream volume state changes
+//	@Description	Server-Sent Events stream of FSM state transitions. Closes automatically when the volume reaches a terminal state (available, attached, deleted, error).
+//	@Tags			volumes
+//	@Produce		text/event-stream
+//	@Param			name	path	string	true	"Volume name"
+//	@Success		200
+//	@Failure		404	{object}	errResponse	"Volume not found"
+//	@Failure		500	{object}	errResponse
+//	@Router			/api/v1/volumes/{name}/events [get]
+func (c *httpController) streamVolumeEvents(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	ch, err := c.app.Subscribe(r.Context(), name)
+	if err != nil {
+		writeErr(w, mapAppError(err), err.Error())
+		return
+	}
+	defer c.app.Unsubscribe(name, ch)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	terminal := map[string]bool{
+		StateAvailable: true,
+		StateAttached:  true,
+		StateDeleted:   true,
+		StateError:     true,
+	}
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+
+			if terminal[event.State] {
+				fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
+				flusher.Flush()
+				return
+			}
+		}
+	}
 }
 
 // healthz godoc

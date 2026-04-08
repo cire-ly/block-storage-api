@@ -29,6 +29,48 @@ var (
 	ErrBackendUnavailable = errors.New("backend unavailable")
 )
 
+// eventBroker is a thread-safe pub/sub channel registry keyed by volume name.
+type eventBroker struct {
+	mu          sync.RWMutex
+	subscribers map[string][]chan VolumeStateEvent
+}
+
+func newEventBroker() *eventBroker {
+	return &eventBroker{subscribers: make(map[string][]chan VolumeStateEvent)}
+}
+
+func (b *eventBroker) publish(name string, e VolumeStateEvent) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, ch := range b.subscribers[name] {
+		select {
+		case ch <- e:
+		default: // never block — drop if subscriber is slow
+		}
+	}
+}
+
+func (b *eventBroker) subscribe(name string) chan VolumeStateEvent {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ch := make(chan VolumeStateEvent, 16)
+	b.subscribers[name] = append(b.subscribers[name], ch)
+	return ch
+}
+
+func (b *eventBroker) unsubscribe(name string, ch <-chan VolumeStateEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	subs := b.subscribers[name]
+	for i, s := range subs {
+		if (<-chan VolumeStateEvent)(s) == ch {
+			b.subscribers[name] = append(subs[:i], subs[i+1:]...)
+			close(s)
+			return
+		}
+	}
+}
+
 // application implements ApplicationContract.
 // It owns zero HTTP or transport imports — pure business logic only.
 type application struct {
@@ -39,6 +81,7 @@ type application struct {
 	policy  RetryPolicy
 	wg      *sync.WaitGroup // shared with VolumeFeature — tracks all retry goroutines
 	bgCtx   context.Context // independent of HTTP requests — outlives any single handler
+	broker  *eventBroker    // pub/sub for SSE subscribers
 }
 
 func newApplication(
@@ -58,6 +101,7 @@ func newApplication(
 		policy:  policy,
 		wg:      wg,
 		bgCtx:   bgCtx,
+		broker:  newEventBroker(),
 	}
 }
 
@@ -352,7 +396,28 @@ func (a *application) applyEvent(ctx context.Context, v *storage.Volume, event s
 			"err", saveErr, "volume", v.Name, "event", event)
 	}
 
+	a.broker.publish(v.Name, VolumeStateEvent{
+		Name:      v.Name,
+		State:     newState,
+		Event:     event,
+		Timestamp: time.Now().UTC(),
+	})
+
 	return nil
+}
+
+// Subscribe returns a buffered channel that receives every FSM transition for name.
+// Returns ErrVolumeNotFound if the volume does not exist.
+func (a *application) Subscribe(ctx context.Context, name string) (<-chan VolumeStateEvent, error) {
+	if _, err := a.loadOrNotFound(ctx, name); err != nil {
+		return nil, err
+	}
+	return a.broker.subscribe(name), nil
+}
+
+// Unsubscribe removes ch from the broker and closes it.
+func (a *application) Unsubscribe(name string, ch <-chan VolumeStateEvent) {
+	a.broker.unsubscribe(name, ch)
 }
 
 // runWithRetry executes op with exponential back-off, up to policy.MaxAttempts times.

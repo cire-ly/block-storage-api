@@ -23,4 +23,9 @@ type ApplicationContract interface {
 	DetachVolume(ctx context.Context, name string) error
 	ReconcileVolume(ctx context.Context, name string) (*storage.Volume, error)
 	HealthCheck(ctx context.Context) error
+	// Subscribe returns a buffered channel that receives every FSM state transition
+	// for the named volume. The channel is closed when the volume reaches a terminal
+	// state or when Unsubscribe is called.
+	Subscribe(ctx context.Context, name string) (<-chan VolumeStateEvent, error)
+	Unsubscribe(name string, ch <-chan VolumeStateEvent)
 }

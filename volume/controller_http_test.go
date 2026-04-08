@@ -105,6 +105,16 @@ func (a *fakeApp) ReconcileVolume(_ context.Context, name string) (*storage.Volu
 
 func (a *fakeApp) HealthCheck(_ context.Context) error { return a.healthErr }
 
+func (a *fakeApp) Subscribe(_ context.Context, name string) (<-chan VolumeStateEvent, error) {
+	if _, ok := a.volumes[name]; !ok {
+		return nil, fmt.Errorf("%w: %q", ErrVolumeNotFound, name)
+	}
+	ch := make(chan VolumeStateEvent, 1)
+	return ch, nil
+}
+
+func (a *fakeApp) Unsubscribe(_ string, ch <-chan VolumeStateEvent) {}
+
 // -- helpers -----------------------------------------------------------------
 
 func newTestRouter(app ApplicationContract) *chi.Mux {

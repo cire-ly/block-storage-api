@@ -2,6 +2,7 @@ package volume
 
 import (
 	"context"
+	"time"
 
 	"github.com/cire-ly/block-storage-api/storage"
 )
@@ -31,6 +32,14 @@ type DatabaseDependency interface {
 	ListVolumesByState(ctx context.Context, states ...string) ([]*storage.Volume, error)
 	DeleteVolume(ctx context.Context, name string) error
 	SaveEvent(ctx context.Context, e VolumeEvent) error
+}
+
+// VolumeStateEvent is emitted on every FSM state transition and pushed to SSE subscribers.
+type VolumeStateEvent struct {
+	Name      string    `json:"name"`
+	State     string    `json:"state"`
+	Event     string    `json:"event"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // LoggerDependency is the structured logger required by the volume feature.
