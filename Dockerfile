@@ -1,25 +1,31 @@
-# Build stage
-FROM golang:1.26-alpine AS builder
+# Build stage — Ceph dev headers required for CGO compilation.
+FROM golang:1.26-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    librados-dev librbd-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Build
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o block-storage-api ./cmd/api
+RUN CGO_ENABLED=1 GOOS=linux go build -tags ceph -o block-storage-api ./cmd/api
 
-# Runtime stage
-FROM alpine:3.19
+# Runtime stage — Ceph shared libs required to load the backend at startup.
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    librados2 librbd1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Ca binaire uniquement
 COPY --from=builder /app/block-storage-api .
 COPY --from=builder /app/internal/db/migrations ./internal/db/migrations
 
 EXPOSE 8080
 
+# STORAGE_BACKEND=mock (default) or ceph — switch at runtime via env var.
 CMD ["./block-storage-api"]

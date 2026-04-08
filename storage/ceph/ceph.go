@@ -36,7 +36,7 @@ type CephBackend struct {
 }
 
 // New connects to the Ceph cluster and opens the configured pool.
-func New(cfg Config) (*CephBackend, error) {
+func New(cfg Config) (storage.VolumeBackend, error) {
 	conn, err := rados.NewConn()
 	if err != nil {
 		return nil, fmt.Errorf("rados.NewConn: %w", err)

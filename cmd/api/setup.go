@@ -19,6 +19,7 @@ import (
 	internaldb "github.com/cire-ly/block-storage-api/internal/db"
 	"github.com/cire-ly/block-storage-api/internal/observability"
 	"github.com/cire-ly/block-storage-api/storage"
+	"github.com/cire-ly/block-storage-api/storage/ceph"
 	"github.com/cire-ly/block-storage-api/storage/mock"
 	"github.com/cire-ly/block-storage-api/volume"
 	"github.com/cire-ly/block-storage-api/volume/repository"
@@ -176,7 +177,20 @@ func (rr *ResourcesRegistry) setupMigrations() error {
 }
 
 func (rr *ResourcesRegistry) setupBackend() error {
-	rr.storage.backend = mock.New()
+	switch rr.config.StorageBackend {
+	case "ceph":
+		b, err := ceph.New(ceph.Config{
+			Monitors: rr.config.CephMonitors,
+			Pool:     rr.config.CephPool,
+			Keyring:  rr.config.CephKeyring,
+		})
+		if err != nil {
+			return fmt.Errorf("ceph backend: %w", err)
+		}
+		rr.storage.backend = b
+	default:
+		rr.storage.backend = mock.New()
+	}
 	rr.closers = append(rr.closers, rr.storage.backend)
 	return nil
 }
