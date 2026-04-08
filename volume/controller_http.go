@@ -456,6 +456,8 @@ func (c *httpController) reconcileVolume(w http.ResponseWriter, r *http.Request)
 func (c *httpController) streamVolumeEvents(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
+	// Subscribe before reading current state to avoid a race where an event
+	// is published between GetVolume and subscribe.
 	ch, err := c.app.Subscribe(r.Context(), name)
 	if err != nil {
 		writeErr(w, mapAppError(err), err.Error())
@@ -463,22 +465,47 @@ func (c *httpController) streamVolumeEvents(w http.ResponseWriter, r *http.Reque
 	}
 	defer c.app.Unsubscribe(name, ch)
 
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := unwrapFlusher(w)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
+	// Headers must be set before any write.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
 
 	terminal := map[string]bool{
 		StateAvailable: true,
 		StateAttached:  true,
 		StateDeleted:   true,
 		StateError:     true,
+	}
+
+	// Send the current state immediately so the client never misses events
+	// that fired before the stream was opened.
+	if current, getErr := c.app.GetVolume(r.Context(), name); getErr == nil {
+		data, _ := json.Marshal(VolumeStateEvent{
+			Name:      current.Name,
+			State:     current.State,
+			Event:     "current",
+			Timestamp: time.Now().UTC(),
+		})
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		if terminal[current.State] {
+			if _, err := fmt.Fprintf(w, "event: done\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
+			return
+		}
 	}
 
 	for {
@@ -505,6 +532,26 @@ func (c *httpController) streamVolumeEvents(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
+}
+
+// unwrapFlusher finds an http.Flusher through middleware ResponseWriter wrappers.
+// It first tries a direct type assertion, then iterates through Unwrap() chains.
+func unwrapFlusher(w http.ResponseWriter) (http.Flusher, bool) {
+	if f, ok := w.(http.Flusher); ok {
+		return f, true
+	}
+	type unwrapper interface{ Unwrap() http.ResponseWriter }
+	for {
+		uw, ok := w.(unwrapper)
+		if !ok {
+			break
+		}
+		w = uw.Unwrap()
+		if f, ok := w.(http.Flusher); ok {
+			return f, true
+		}
+	}
+	return nil, false
 }
 
 // healthz godoc
