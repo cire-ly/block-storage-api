@@ -23,23 +23,24 @@ RUN CGO_ENABLED=1 GOOS=linux go build -tags ceph -o block-storage-api ./cmd/api
 
 # Runtime stage — copy Ceph shared libs directly from builder to avoid
 # reconfiguring the Ceph apt repo (which causes dependency conflicts on slim).
+# Runtime stage
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Ceph Reef shared libs from builder (librados2 + librbd1 + their deps).
+# Copy Ceph Reef shared libs from builder
 COPY --from=builder /usr/lib/x86_64-linux-gnu/librados.so.2* /usr/lib/x86_64-linux-gnu/
 COPY --from=builder /usr/lib/x86_64-linux-gnu/librbd.so.1* /usr/lib/x86_64-linux-gnu/
 COPY --from=builder /usr/lib/x86_64-linux-gnu/libceph-common.so.2* /usr/lib/x86_64-linux-gnu/
 
-WORKDIR /app
+# Update linker cache
+RUN ldconfig
 
+WORKDIR /app
 COPY --from=builder /app/block-storage-api .
 COPY --from=builder /app/internal/db/migrations ./internal/db/migrations
 
 EXPOSE 8080
-
-# STORAGE_BACKEND=mock (default) or ceph — switch at runtime via env var.
 CMD ["./block-storage-api"]
