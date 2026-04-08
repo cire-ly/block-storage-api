@@ -1,0 +1,94 @@
+{
+  "title": "block-storage-api",
+  "uid": "block-storage-api",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP Traffic",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=\"block-storage-api\"} | json | msg=\"http request\" | line_format \"{{.method}} {{.path}} → {{.status}} ({{.duration_ms}}ms) [{{.trace_id}}]\""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    },
+    {
+      "id": 2,
+      "title": "Errors",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=\"block-storage-api\"} | json | level=\"ERROR\" | line_format \"❌ {{.msg}} — {{.err}}\""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "HTTP Errors 4xx/5xx",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=\"block-storage-api\"} | json | msg=\"http request\" | status >= 400 | line_format \"⚠️ {{.method}} {{.path}} → {{.status}} [{{.trace_id}}]\""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    },
+    {
+      "id": 4,
+      "title": "System / Startup",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=\"block-storage-api\"} | json | msg!=\"http request\" | level=\"INFO\" | line_format \"⚙️ {{.msg}}\""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      }
+    }
+  ]
+}
