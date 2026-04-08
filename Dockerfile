@@ -1,8 +1,16 @@
-# Build stage — Ceph dev headers required for CGO compilation.
+# Build stage — Ceph Reef (18.x) headers required by go-ceph v0.38+.
+# Debian bookworm ships Quincy (17.x) which lacks rbd_encryption_load2 and
+# RBD_ENCRYPTION_FORMAT_LUKS — added in Reef. We pin the official Ceph repo.
 FROM golang:1.26-bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    librados-dev librbd-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends gnupg2 curl && \
+    curl -fsSL https://download.ceph.com/keys/release.asc \
+        | gpg --dearmor > /usr/share/keyrings/ceph.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/ceph.gpg] \
+        https://download.ceph.com/debian-reef/ bookworm main" \
+        > /etc/apt/sources.list.d/ceph.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        librados-dev librbd-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -13,11 +21,17 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -tags ceph -o block-storage-api ./cmd/api
 
-# Runtime stage — Ceph shared libs required to load the backend at startup.
+# Runtime stage — same Ceph Reef repo to get matching shared libs.
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    librados2 librbd1 ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends gnupg2 curl && \
+    curl -fsSL https://download.ceph.com/keys/release.asc \
+        | gpg --dearmor > /usr/share/keyrings/ceph.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/ceph.gpg] \
+        https://download.ceph.com/debian-reef/ bookworm main" \
+        > /etc/apt/sources.list.d/ceph.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        librados2 librbd1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

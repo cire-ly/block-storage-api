@@ -180,7 +180,10 @@ stateDiagram-v2
     deleting_failed --> deleting: retry
     deleting_failed --> error: fail
 
-    error --> pending: reset
+    error --> error: reconcile (backend unreachable → 503)
+    error --> pending: reconcile (absent from backend)
+    error --> available: reconcile (exists, not attached)
+    error --> attached: reconcile (exists, attached to nodeX)
 ```
 
 ### States
@@ -199,7 +202,23 @@ stateDiagram-v2
 | `deleting` | Deletion in progress |
 | `deleting_failed` | Deletion failed — retry pending |
 | `deleted` | Removed |
-| `error` | Terminal failure — manual `reset` required |
+| `error` | Terminal failure — recovery via `POST /reconcile` |
+
+### Error recovery — reconcile
+
+`error` is a terminal state with no automatic exit. Recovery is explicit via
+`POST /api/v1/volumes/{name}/reconcile`, which queries the real backend state
+and aligns the FSM accordingly:
+
+| Real backend state | FSM target | Notes |
+|--------------------|------------|-------|
+| Backend unreachable | stays `error` | returns 503 |
+| Volume absent | `pending` | will be reprovisioned on next create |
+| Volume exists, not attached | `available` | ready to use |
+| Volume exists, attached to node X | `attached` | NodeID restored |
+
+This is intentionally explicit — it avoids auto-recovery hiding infrastructure
+problems, and forces an operator decision before resuming operations.
 
 ### Retry policy
 
@@ -227,7 +246,7 @@ GET    /api/v1/volumes/{name}           Get a volume
 PUT    /api/v1/volumes/{name}/attach    Attach to a node
 PUT    /api/v1/volumes/{name}/detach    Detach
 DELETE /api/v1/volumes/{name}           Delete
-POST   /api/v1/volumes/{name}/reset     Reset from error → pending
+POST   /api/v1/volumes/{name}/reconcile  Align FSM with real backend state (from error only)
 GET    /healthz                         Backend health check
 GET    /swagger/index.html              Swagger UI
 ```
@@ -254,8 +273,8 @@ curl -s -X PUT http://localhost:8080/api/v1/volumes/vol-01/detach | jq
 # Delete
 curl -s -X DELETE http://localhost:8080/api/v1/volumes/vol-01
 
-# Reset from error state
-curl -s -X POST http://localhost:8080/api/v1/volumes/vol-01/reset | jq
+# Reconcile from error state (aligns FSM with real Ceph state)
+curl -s -X POST http://localhost:8080/api/v1/volumes/vol-01/reconcile | jq
 
 # Health
 curl -s http://localhost:8080/healthz | jq
@@ -268,9 +287,8 @@ curl -s http://localhost:8080/healthz | jq
 ### Mock backend (no infrastructure)
 
 ```bash
-go run ./cmd/api
-# or
 make run
+# or: go run ./cmd/api
 ```
 
 ### Docker Compose (API + PostgreSQL + Loki + Grafana)
@@ -283,18 +301,41 @@ docker-compose up
 - Swagger: `http://localhost:8080/swagger/index.html`
 - Grafana: `http://localhost:3000`
 
+The Docker image is built with `-tags ceph` (see below) — the active backend
+is controlled by `STORAGE_BACKEND` in `docker-compose.yml` at runtime.
+
 ### Ceph backend
 
 ```bash
 # Install Microceph locally (Linux)
 sudo ./scripts/setup-ceph.sh
 
-# Run with Ceph backend
+# Run with Ceph backend (requires librados-dev + librbd-dev installed)
 STORAGE_BACKEND=ceph \
 CEPH_MONITORS=127.0.0.1:6789 \
 CEPH_POOL=rbd-demo \
-go run -tags ceph ./cmd/api
+make run-ceph
 ```
+
+### Backend selection — the CGO nuance
+
+The Ceph backend uses `go-ceph`, a CGO binding to `librados` / `librbd`.
+Because CGO requires the C headers **at compile time** (not just at runtime),
+a plain `go build` on a machine without `librados-dev` installed would fail —
+even if `STORAGE_BACKEND=mock` is set and the Ceph code path is never reached.
+
+This forces a two-level build strategy:
+
+| Context | Build flags | Ceph available |
+|---------|-------------|----------------|
+| `make run` / `make build` | no `-tags ceph`, `CGO_ENABLED=0` | no — stub returns error |
+| `make run-ceph` | `-tags ceph`, needs local libs | yes |
+| `docker build` | `-tags ceph` inside builder image (libs installed via apt) | yes |
+
+The `storage/ceph/` package ships a `stub.go` (`//go:build !ceph`) that
+exposes `Config` and `New()` — making the package importable without the
+libs — and returns an explicit error if Ceph is selected at runtime without
+the real implementation compiled in.
 
 ---
 
