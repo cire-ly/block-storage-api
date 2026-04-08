@@ -38,6 +38,7 @@ type application struct {
 	tracer  trace.Tracer
 	policy  RetryPolicy
 	wg      *sync.WaitGroup // shared with VolumeFeature — tracks all retry goroutines
+	bgCtx   context.Context // independent of HTTP requests — outlives any single handler
 }
 
 func newApplication(
@@ -47,6 +48,7 @@ func newApplication(
 	tracer trace.Tracer,
 	policy RetryPolicy,
 	wg *sync.WaitGroup,
+	bgCtx context.Context,
 ) *application {
 	return &application{
 		backend: backend,
@@ -55,6 +57,7 @@ func newApplication(
 		tracer:  tracer,
 		policy:  policy,
 		wg:      wg,
+		bgCtx:   bgCtx,
 	}
 }
 
@@ -108,12 +111,13 @@ func (a *application) CreateVolume(ctx context.Context, name string, sizeMB int)
 	}
 
 	// Async: create on backend, then transition to available or retry.
+	// Uses a.bgCtx (not the HTTP request ctx) so the goroutine outlives the 202 response.
 	// The goroutine is tracked by wg so VolumeFeature.Close() can drain it.
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 		a.runWithRetry(
-			ctx, v.Name,
+			a.bgCtx, v.Name,
 			func(bCtx context.Context) error {
 				_, bErr := a.backend.CreateVolume(bCtx, v.Name, v.SizeMB)
 				return bErr
@@ -143,7 +147,7 @@ func (a *application) DeleteVolume(ctx context.Context, name string) error {
 	go func() {
 		defer a.wg.Done()
 		a.runWithRetry(
-			ctx, v.Name,
+			a.bgCtx, v.Name,
 			func(bCtx context.Context) error {
 				return a.backend.DeleteVolume(bCtx, v.Name)
 			},
@@ -197,7 +201,7 @@ func (a *application) AttachVolume(ctx context.Context, name string, nodeID stri
 	go func() {
 		defer a.wg.Done()
 		a.runWithRetry(
-			ctx, v.Name,
+			a.bgCtx, v.Name,
 			func(bCtx context.Context) error {
 				return a.backend.AttachVolume(bCtx, v.Name, nodeID)
 			},
@@ -226,7 +230,7 @@ func (a *application) DetachVolume(ctx context.Context, name string) error {
 	go func() {
 		defer a.wg.Done()
 		a.runWithRetry(
-			ctx, v.Name,
+			a.bgCtx, v.Name,
 			func(bCtx context.Context) error {
 				return a.backend.DetachVolume(bCtx, v.Name)
 			},

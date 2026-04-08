@@ -32,6 +32,7 @@ type VolumeFeature struct {
 	app       *application
 	wg        sync.WaitGroup     // tracks all internal goroutines
 	cancelCtx context.CancelFunc // cancels the internal lifecycle context
+	bgCtx     context.Context    // independent of HTTP requests — used by retry goroutines
 	closers   []interface{ Close(context.Context) error }
 }
 
@@ -54,13 +55,15 @@ func NewVolumeFeature(params NewVolumeFeatureParams) (*VolumeFeature, error) {
 	}
 
 	// internalCtx is the lifecycle context for all goroutines owned by this feature.
-	// Canceling it (via feat.cancelCtx) stops reconciliation and any future monitors.
+	// Canceling it (via feat.cancelCtx) stops reconciliation and retry goroutines.
+	// It is intentionally independent of any HTTP request context.
 	internalCtx, cancel := context.WithCancel(context.Background())
 
-	feat := &VolumeFeature{cancelCtx: cancel}
+	feat := &VolumeFeature{cancelCtx: cancel, bgCtx: internalCtx}
 
-	// Application holds a pointer to feat.wg so retry goroutines are tracked.
-	feat.app = newApplication(params.Backend, params.DB, params.Logger, params.Tracer, policy, &feat.wg)
+	// Application holds a pointer to feat.wg so retry goroutines are tracked,
+	// and bgCtx so retry goroutines outlive the HTTP request that triggered them.
+	feat.app = newApplication(params.Backend, params.DB, params.Logger, params.Tracer, policy, &feat.wg, internalCtx)
 
 	ctrl := newHTTPController(feat.app, params.Logger, params.Tracer, params.Meter)
 	ctrl.registerRoutes(params.Router)

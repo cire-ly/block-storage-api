@@ -189,7 +189,7 @@ func (fakeLogger) Error(_ string, _ ...any) {}
 
 func newApp(db *fakeDB, backend StorageBackendDependency) *application {
 	var wg sync.WaitGroup
-	return newApplication(backend, db, fakeLogger{}, noop.NewTracerProvider().Tracer("test"), DefaultRetryPolicy(), &wg)
+	return newApplication(backend, db, fakeLogger{}, noop.NewTracerProvider().Tracer("test"), DefaultRetryPolicy(), &wg, context.Background())
 }
 
 // waitState polls the DB until volume.State == want or timeout.
