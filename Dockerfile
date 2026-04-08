@@ -21,18 +21,18 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -tags ceph -o block-storage-api ./cmd/api
 
-# Runtime stage — same Ceph Reef repo to get matching shared libs.
+# Runtime stage — copy Ceph shared libs directly from builder to avoid
+# reconfiguring the Ceph apt repo (which causes dependency conflicts on slim).
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends gnupg2 curl && \
-    curl -fsSL https://download.ceph.com/keys/release.asc \
-        | gpg --dearmor > /usr/share/keyrings/ceph.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/ceph.gpg] \
-        https://download.ceph.com/debian-reef/ bookworm main" \
-        > /etc/apt/sources.list.d/ceph.list && \
-    apt-get update && apt-get install -y --no-install-recommends \
-        librados2 librbd1 ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy Ceph Reef shared libs from builder (librados2 + librbd1 + their deps).
+COPY --from=builder /usr/lib/x86_64-linux-gnu/librados.so.2* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/librbd.so.1* /usr/lib/x86_64-linux-gnu/
+COPY --from=builder /usr/lib/x86_64-linux-gnu/libceph-common.so.2* /usr/lib/x86_64-linux-gnu/
 
 WORKDIR /app
 
