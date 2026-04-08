@@ -1,6 +1,7 @@
 # block-storage-api
 
-> Pluggable block storage API in Go — Ceph backend with FSM volume lifecycle and retry policy.
+> Pluggable block storage API in Go — Ceph backend with FSM volume lifecycle, retry policy, and real-time SSE streaming.
+> Demo project for **Scaleway Senior Software Engineer** application.
 
 [![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml)
 [![Go Version](https://img.shields.io/badge/go-1.26-00ADD8?logo=go)](https://go.dev/)
@@ -17,7 +18,7 @@ Deployed on a **Scaleway DEV1-S instance** (Paris, fr-par-1):
 |----------|-----|
 | Health check | http://163.172.144.70:8080/healthz |
 | Swagger UI | http://163.172.144.70:8080/swagger/index.html |
-| Grafana (logs) | http://163.172.144.70:3000/d/e0737087-df70-49b2-910b-eda4adcc2893/block-storage-api-monitoring?orgId=1&from=now-30m&to=now |
+| Grafana (logs) | http://163.172.144.70:3000 |
 
 ```bash
 curl -s http://163.172.144.70:8080/healthz | jq
@@ -43,6 +44,13 @@ curl -s http://163.172.144.70:8080/healthz | jq
 
 ---
 
+## Infrastructure & Data Flow
+
+![Infrastructure](docs/block-storage-api-architecture.png)
+
+
+---
+
 ## Architecture
 
 Hexagonal architecture with a feature-based package structure
@@ -65,7 +73,7 @@ block-storage-api/
 │   ├── fsm.go             # FSM states, transitions, retry policy
 │   └── repository/
 │       ├── postgres.go    # PostgreSQL impl of DatabaseDependency
-│       └── inmemory.go    # in-memory impl for local dev
+│       └── inmemory.go    # in-memory impl for tests
 ├── storage/
 │   ├── backend.go         # VolumeBackend interface + Volume type
 │   ├── mock/              # in-memory backend (default, no deps)
@@ -85,68 +93,70 @@ The `volume/` package is self-contained:
 
 ```go
 feat, err := volume.NewVolumeFeature(volume.NewVolumeFeatureParams{
-    Logger:      logger,
-    Backend:     storageBackend,
-    DB:          volumeRepo,
-    Tracer:      tracer,
-    Meter:       meter,
-    Router:      router,
-    RetryPolicy: volume.RetryPolicy{MaxAttempts: 3, InitialWait: 500*time.Millisecond, ...},
+    Logger:          logger,
+    Backend:         storageBackend,
+    DB:              volumeRepo,
+    Tracer:          tracer,
+    Meter:           meter,
+    Router:          router,
+    RetryPolicy:     volume.RetryPolicy{MaxAttempts: 3, InitialWait: 500*time.Millisecond},
+    ReconcilePolicy: config.ReconcilePolicy{DBOnly: "error", CephOnly: "ignore"},
 })
+```
+
+### NVMe-oF — transport, not a backend
+
+NVMe-oF is a **transport layer** — it exposes an existing volume over the network.
+It does NOT store data and does NOT implement `VolumeBackend`.
+
+```
+Ceph RBD ──► NVMe-oF Target ──► Initiator (sees /dev/nvme1n1 as local disk)
+```
+
+### Ceph CAP strategy
+
+Ceph is **CP by default** — managed at pool level, not application level:
+
+```bash
+ceph osd pool set rbd-demo min_size 2  # refuse writes if quorum not met
+ceph osd pool set rbd-demo size 3
 ```
 
 ### Goroutine lifecycle — WaitGroup
 
-`VolumeFeature` tracks every internal goroutine with a `sync.WaitGroup` to guarantee
-a clean shutdown with no leaks.
+`VolumeFeature` tracks every internal goroutine with `sync.WaitGroup`:
 
 ```go
 type VolumeFeature struct {
     wg        sync.WaitGroup     // tracks all internal goroutines
     cancelCtx context.CancelFunc // cancels them on shutdown
-    ...
+    bgCtx     context.Context    // independent of HTTP request context
 }
 ```
 
 **Shutdown sequence** (`VolumeFeature.Close`):
 
 1. `f.cancelCtx()` — signals all goroutines via `ctx.Done()`
-2. `f.wg.Wait()` — blocks until every goroutine has exited (bounded by caller deadline)
+2. `f.wg.Wait()` — blocks until every goroutine has exited
 3. LIFO closers — remaining resources closed in reverse init order
 
-**Retry goroutines** check `ctx.Done()` at two points:
+**Retry goroutines** check `ctx.Done()` before each attempt and during backoff:
 
 ```go
 for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
     select {
     case <-ctx.Done():
-        return // canceled before attempt — stop silently
+        return // canceled — stop silently
     default:
     }
-
     err := op(ctx)
-    if err == nil { return } // success
-
+    if err == nil { return }
     select {
     case <-ctx.Done():
-        return // canceled during backoff — stop silently
+        return
     case <-time.After(backoff):
     }
 }
-```
-
-**Startup reconciliation** runs each stuck volume in parallel:
-
-```go
-var wg sync.WaitGroup
-for _, vol := range transitionalVolumes {
-    wg.Add(1)
-    go func(v *storage.Volume) {
-        defer wg.Done()
-        f.reconcileVolume(ctx, v)
-    }(vol)
-}
-wg.Wait()
 ```
 
 ---
@@ -180,7 +190,6 @@ stateDiagram-v2
     deleting_failed --> deleting: retry
     deleting_failed --> error: fail
 
-    error --> error: reconcile (backend unreachable → 503)
     error --> pending: reconcile (absent from backend)
     error --> available: reconcile (exists, not attached)
     error --> attached: reconcile (exists, attached to nodeX)
@@ -204,22 +213,6 @@ stateDiagram-v2
 | `deleted` | Removed |
 | `error` | Terminal failure — recovery via `POST /reconcile` |
 
-### Error recovery — reconcile
-
-`error` is a terminal state with no automatic exit. Recovery is explicit via
-`POST /api/v1/volumes/{name}/reconcile`, which queries the real backend state
-and aligns the FSM accordingly:
-
-| Real backend state | FSM target | Notes |
-|--------------------|------------|-------|
-| Backend unreachable | stays `error` | returns 503 |
-| Volume absent | `pending` | will be reprovisioned on next create |
-| Volume exists, not attached | `available` | ready to use |
-| Volume exists, attached to node X | `attached` | NodeID restored |
-
-This is intentionally explicit — it avoids auto-recovery hiding infrastructure
-problems, and forces an operator decision before resuming operations.
-
 ### Retry policy
 
 Every in-progress state has a `*_failed` intermediate with exponential backoff:
@@ -233,23 +226,69 @@ Every in-progress state has a `*_failed` intermediate with exponential backoff:
 
 Delays: 500ms → 1s → 2s → terminal `error` after `MaxAttempts`.
 
-Every FSM transition is persisted in `volume_events` (audit trail for RCA).
+Every FSM transition is persisted in `volume_events` (full audit trail for RCA).
+
+**Important:** retry is triggered only by **Ceph backend errors** — never by FSM
+transition errors. An invalid transition (e.g. DELETE on an `attached` volume)
+returns `409 Conflict` immediately with no retry.
+
+### Error recovery — reconcile
+
+`error` is a terminal state. Recovery is explicit via `POST /reconcile`:
+
+| Real backend state | FSM target |
+|--------------------|------------|
+| Backend unreachable | stays `error` — returns 503 |
+| Volume absent | `pending` |
+| Volume exists, not attached | `available` |
+| Volume exists, attached to node X | `attached` |
+
+### Startup reconciliation
+
+On startup, volumes stuck in transitional states are reconciled against the
+real Ceph state. The policy is configurable:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RECONCILE_DB_ONLY` | `error` | Volume in DB but absent from Ceph: `error` \| `delete` \| `ignore` |
+| `RECONCILE_CEPH_ONLY` | `ignore` | Volume in Ceph but absent from DB: `ignore` \| `import` |
 
 ---
 
 ## REST endpoints
 
 ```
-POST   /api/v1/volumes                  Create a volume
-GET    /api/v1/volumes                  List volumes
-GET    /api/v1/volumes/{name}           Get a volume
-PUT    /api/v1/volumes/{name}/attach    Attach to a node
-PUT    /api/v1/volumes/{name}/detach    Detach
-DELETE /api/v1/volumes/{name}           Delete
-POST   /api/v1/volumes/{name}/reconcile  Align FSM with real backend state (from error only)
-GET    /healthz                         Backend health check
-GET    /swagger/index.html              Swagger UI
+POST   /api/v1/volumes                    Create a volume
+GET    /api/v1/volumes                    List volumes
+GET    /api/v1/volumes/{name}             Get a volume
+GET    /api/v1/volumes/{name}/events      Stream state changes (SSE)
+PUT    /api/v1/volumes/{name}/attach      Attach to a node
+PUT    /api/v1/volumes/{name}/detach      Detach
+DELETE /api/v1/volumes/{name}             Delete
+POST   /api/v1/volumes/{name}/reconcile   Align FSM with real Ceph state
+GET    /healthz                           Backend health check
+GET    /swagger/index.html                Swagger UI
 ```
+
+### Server-Sent Events — real-time state streaming
+
+Volume operations are asynchronous (202 Accepted). The `/events` endpoint streams
+FSM state transitions in real time — no polling needed:
+
+```bash
+# Terminal 1 — open stream immediately after create
+curl -N http://163.172.144.70:8080/api/v1/volumes/vol-01/events
+
+# Output:
+# data: {"name":"vol-01","state":"creating","event":"current","timestamp":"..."}
+# data: {"name":"vol-01","state":"available","event":"ready","timestamp":"..."}
+# event: done
+# data: {"name":"vol-01","state":"available"}
+```
+
+The handler sends the **current state immediately** on connection, then pushes
+future transitions. The stream closes automatically on terminal states
+(`available`, `attached`, `deleted`, `error`).
 
 ### Examples
 
@@ -258,6 +297,9 @@ GET    /swagger/index.html              Swagger UI
 curl -s -X POST http://localhost:8080/api/v1/volumes \
   -H 'Content-Type: application/json' \
   -d '{"name":"vol-01","size_mb":1024}' | jq
+
+# Stream state changes
+curl -N http://localhost:8080/api/v1/volumes/vol-01/events
 
 # List
 curl -s http://localhost:8080/api/v1/volumes | jq
@@ -273,7 +315,7 @@ curl -s -X PUT http://localhost:8080/api/v1/volumes/vol-01/detach | jq
 # Delete
 curl -s -X DELETE http://localhost:8080/api/v1/volumes/vol-01
 
-# Reconcile from error state (aligns FSM with real Ceph state)
+# Reconcile from error state
 curl -s -X POST http://localhost:8080/api/v1/volumes/vol-01/reconcile | jq
 
 # Health
@@ -288,7 +330,6 @@ curl -s http://localhost:8080/healthz | jq
 
 ```bash
 make run
-# or: go run ./cmd/api
 ```
 
 ### Docker Compose (API + PostgreSQL + Loki + Grafana)
@@ -299,18 +340,11 @@ docker-compose up
 
 - API: `http://localhost:8080`
 - Swagger: `http://localhost:8080/swagger/index.html`
-- Grafana: `http://localhost:3000`
-
-The Docker image is built with `-tags ceph` (see below) — the active backend
-is controlled by `STORAGE_BACKEND` in `docker-compose.yml` at runtime.
+- Grafana: `http://localhost:3000` — datasource and dashboards provisioned automatically
 
 ### Ceph backend
 
 ```bash
-# Install Microceph locally (Linux)
-sudo ./scripts/setup-ceph.sh
-
-# Run with Ceph backend (requires librados-dev + librbd-dev installed)
 STORAGE_BACKEND=ceph \
 CEPH_MONITORS=127.0.0.1:6789 \
 CEPH_POOL=rbd-demo \
@@ -319,23 +353,15 @@ make run-ceph
 
 ### Backend selection — the CGO nuance
 
-The Ceph backend uses `go-ceph`, a CGO binding to `librados` / `librbd`.
-Because CGO requires the C headers **at compile time** (not just at runtime),
-a plain `go build` on a machine without `librados-dev` installed would fail —
-even if `STORAGE_BACKEND=mock` is set and the Ceph code path is never reached.
-
-This forces a two-level build strategy:
-
 | Context | Build flags | Ceph available |
 |---------|-------------|----------------|
-| `make run` / `make build` | no `-tags ceph`, `CGO_ENABLED=0` | no — stub returns error |
+| `make run` | no `-tags ceph`, `CGO_ENABLED=0` | no — stub returns error |
 | `make run-ceph` | `-tags ceph`, needs local libs | yes |
-| `docker build` | `-tags ceph` inside builder image (libs installed via apt) | yes |
+| `docker build` | `-tags ceph` inside builder image | yes |
 
-The `storage/ceph/` package ships a `stub.go` (`//go:build !ceph`) that
-exposes `Config` and `New()` — making the package importable without the
-libs — and returns an explicit error if Ceph is selected at runtime without
-the real implementation compiled in.
+The `storage/ceph/` package ships a `stub.go` (`//go:build !ceph`) that makes
+the package importable without the C libs, returning an explicit error if Ceph
+is selected at runtime without the real implementation compiled in.
 
 ---
 
@@ -357,6 +383,8 @@ the real implementation compiled in.
 | `VOLUME_RETRY_INITIAL_WAIT` | `500ms` | Initial backoff delay |
 | `VOLUME_RETRY_MULTIPLIER` | `2.0` | Exponential backoff multiplier |
 | `VOLUME_RETRY_MAX_WAIT` | `10s` | Maximum backoff delay |
+| `RECONCILE_DB_ONLY` | `error` | `error` \| `delete` \| `ignore` |
+| `RECONCILE_CEPH_ONLY` | `ignore` | `ignore` \| `import` |
 
 ---
 
@@ -364,22 +392,42 @@ the real implementation compiled in.
 
 ```bash
 make test         # go test ./... -race
-make coverage     # HTML coverage report (target ≥ 70%)
+make coverage     # HTML coverage report
 make lint         # golangci-lint
 make migrate      # apply SQL migrations
 make migrate-down # rollback last migration
 ```
+
+### Test results
+
+```
+ok   config
+ok   storage/mock
+ok   transport/nvmeof
+ok   volume
+ok   volume/repository
+```
+
 ---
 
 ## Deployment
 
-### CI/CD
+### CI/CD pipeline
 
-Every push to `main` triggers GitHub Actions:
-1. Build Docker image
-2. Push to `ghcr.io/cire-ly/block-storage-api:latest`
+```
+push → lint → test → build-and-push (main only)
+                            ↓
+               deploy via workflow_dispatch (manual trigger)
+```
 
-### Update production
+Build is automatic on every push to `main`. Deploy to production is **manual** —
+triggered via GitHub Actions → Run workflow. This prevents accidental deploys
+and allows grouping multiple commits into a single release.
+
+The deploy step copies `grafana/` and `docker-compose.yml` to the VPS via SCP,
+then restarts the containers.
+
+### Update production manually
 
 ```bash
 ssh root@163.172.144.70
@@ -390,6 +438,9 @@ docker compose logs -f
 
 ### Observability — Grafana + Loki
 
+Grafana datasource and dashboards are **provisioned automatically** at startup
+via `grafana/provisioning/` — no manual configuration needed after `docker compose up`.
+
 ```logql
 # HTTP traffic
 {service="block-storage-api"} | json | msg="http request"
@@ -399,7 +450,10 @@ docker compose logs -f
 {service="block-storage-api"} | json | level="ERROR"
 
 # HTTP errors 4xx/5xx
-{service="block-storage-api"} | json | msg="http request" | status >= 400
+{service="block-storage-api"} | json | msg="http request" | status=~"4.*|5.*"
+
+# System / startup logs
+{service="block-storage-api"} | json | level="INFO" | msg!="http request"
 ```
 
 ---
@@ -416,5 +470,7 @@ Context flows through every layer — never dropped or replaced with `context.Ba
 | Graceful shutdown | 10s |
 
 The HTTP server's `BaseContext` is set to the application lifecycle context (`appCtx`).
-When SIGTERM fires, `appCtx` is canceled, propagating through all request contexts to
-retry goroutines, which stop at the next `ctx.Done()` check.
+When SIGTERM fires, `appCtx` is canceled, propagating through all layers to retry
+goroutines which stop at the next `ctx.Done()` check. The `bgCtx` used by retry
+goroutines is independent of the HTTP request context — it lives for the full
+duration of the application, not the request.
