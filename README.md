@@ -1,7 +1,6 @@
 # block-storage-api
 
 > Pluggable block storage API in Go — Ceph backend with FSM volume lifecycle, retry policy, and real-time SSE streaming.
-> Demo project for **Scaleway Senior Software Engineer** application.
 
 [![CI](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/cire-ly/block-storage-api/actions/workflows/ci-cd.yml)
 [![Go Version](https://img.shields.io/badge/go-1.26-00ADD8?logo=go)](https://go.dev/)
