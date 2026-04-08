@@ -491,11 +491,15 @@ func (c *httpController) streamVolumeEvents(w http.ResponseWriter, r *http.Reque
 			}
 
 			data, _ := json.Marshal(event)
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return // client disconnected
+			}
 			flusher.Flush()
 
 			if terminal[event.State] {
-				fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
+				if _, err := fmt.Fprintf(w, "event: done\ndata: %s\n\n", data); err != nil {
+					return
+				}
 				flusher.Flush()
 				return
 			}
