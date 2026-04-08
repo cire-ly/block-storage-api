@@ -8,8 +8,13 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/cire-ly/block-storage-api/config"
 	"github.com/cire-ly/block-storage-api/storage"
 )
+
+func defaultTestReconcilePolicy() config.ReconcilePolicy {
+	return config.ReconcilePolicy{DBOnly: "error", CephOnly: "ignore"}
+}
 
 func TestNewVolumeFeatureSuccess(t *testing.T) {
 	feat, err := NewVolumeFeature(NewVolumeFeatureParams{
@@ -121,7 +126,7 @@ func TestReconcileOnStartupNoVolumes(t *testing.T) {
 	}
 
 	// Reconcile with empty DB should not panic.
-	feat.reconcileOnStartup(context.Background())
+	feat.reconcileOnStartup(context.Background(), defaultTestReconcilePolicy())
 }
 
 func TestReconcileOnStartupBackendMissing(t *testing.T) {
@@ -144,7 +149,7 @@ func TestReconcileOnStartupBackendMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	feat.reconcileOnStartup(context.Background())
+	feat.reconcileOnStartup(context.Background(), defaultTestReconcilePolicy())
 
 	// Volume should be in error state after reconcile detects it is absent from backend.
 	v, _ := db.LoadVolume(context.Background(), "stuck")
@@ -179,7 +184,7 @@ func TestReconcileOnStartupBackendPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	feat.reconcileOnStartup(context.Background())
+	feat.reconcileOnStartup(context.Background(), defaultTestReconcilePolicy())
 
 	// Volume should be available after reconcile confirms it exists in backend.
 	v, _ := db.LoadVolume(context.Background(), "present")

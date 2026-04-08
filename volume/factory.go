@@ -6,25 +6,29 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cire-ly/block-storage-api/assertor"
+	"github.com/cire-ly/block-storage-api/config"
 	"github.com/cire-ly/block-storage-api/storage"
 )
 
 // NewVolumeFeatureParams holds all required dependencies for the volume feature.
 // Every field is required unless noted.
 type NewVolumeFeatureParams struct {
-	Logger      LoggerDependency         // required
-	Backend     StorageBackendDependency // required
-	DB          DatabaseDependency       // required
-	Tracer      trace.Tracer             // required
-	Meter       metric.Meter             // optional
-	Router      chi.Router               // required
-	RetryPolicy RetryPolicy              // optional — DefaultRetryPolicy applied when zero
+	Logger          LoggerDependency         // required
+	Backend         StorageBackendDependency // required
+	DB              DatabaseDependency       // required
+	Tracer          trace.Tracer             // required
+	Meter           metric.Meter             // optional
+	Router          chi.Router               // required
+	RetryPolicy     RetryPolicy              // optional — DefaultRetryPolicy applied when zero
+	ReconcilePolicy config.ReconcilePolicy   // optional — defaults: DBOnly=error, CephOnly=ignore
 }
 
 // VolumeFeature is the wired volume feature, implementing FeatureContract.
@@ -69,11 +73,22 @@ func NewVolumeFeature(params NewVolumeFeatureParams) (*VolumeFeature, error) {
 	ctrl.registerRoutes(params.Router)
 
 	// Reconcile volumes interrupted mid-transition at previous shutdown.
+	// Bounded to 60 seconds so a slow backend does not block startup indefinitely.
 	// Runs inside the tracked WaitGroup so Close() waits for it to finish.
+	reconcilePolicy := params.ReconcilePolicy
+	if reconcilePolicy.DBOnly == "" {
+		reconcilePolicy.DBOnly = "error"
+	}
+	if reconcilePolicy.CephOnly == "" {
+		reconcilePolicy.CephOnly = "ignore"
+	}
+
 	feat.wg.Add(1)
 	go func() {
 		defer feat.wg.Done()
-		feat.reconcileOnStartup(internalCtx)
+		reconcileCtx, reconcileCancel := context.WithTimeout(feat.bgCtx, 60*time.Second)
+		defer reconcileCancel()
+		feat.reconcileOnStartup(reconcileCtx, reconcilePolicy)
 	}()
 
 	return feat, nil
@@ -114,66 +129,156 @@ func (f *VolumeFeature) Close(ctx context.Context) error {
 	return err
 }
 
-// reconcileOnStartup re-drives volumes that were stuck in a transitional state
-// at the time of the last shutdown. Each volume is reconciled in its own goroutine;
-// the function blocks until all are done.
-func (f *VolumeFeature) reconcileOnStartup(ctx context.Context) {
+// reconcileOnStartup aligns the DB and the backend at startup according to policy.
+//
+// Step 1 — for every volume stuck in a transitional state in the DB, check if
+// it still exists in the backend and apply the appropriate FSM target state.
+//
+// Step 2 — when policy.CephOnly == "import", list all backend volumes and
+// create a DB record for any that are absent.
+func (f *VolumeFeature) reconcileOnStartup(ctx context.Context, policy config.ReconcilePolicy) {
+	log := f.app.logger
+
+	// --- Step 1: DB transitional volumes vs backend ---
 	transitional := []string{
 		StateCreating, StateAttaching, StateDetaching, StateDeleting,
 		StateCreatingFailed, StateAttachingFailed, StateDetachingFailed, StateDeletingFailed,
 	}
 
-	volumes, err := f.app.db.ListVolumesByState(ctx, transitional...)
+	dbVolumes, err := f.app.db.ListVolumesByState(ctx, transitional...)
 	if err != nil {
-		f.app.logger.Error("reconcile: failed to list transitional volumes", "err", err)
-		return
-	}
-
-	if len(volumes) == 0 {
+		log.Error("reconcile: cannot list transitional volumes", "err", err)
 		return
 	}
 
 	var wg sync.WaitGroup
-	for _, v := range volumes {
+	for _, v := range dbVolumes {
 		wg.Add(1)
 		go func(vol *storage.Volume) {
 			defer wg.Done()
-			f.reconcileVolume(ctx, vol)
+			f.reconcileDBVolume(ctx, vol, policy)
 		}(v)
+	}
+	wg.Wait()
+
+	// --- Step 2: backend-only volumes ---
+	if policy.CephOnly != "import" {
+		return
+	}
+
+	backendVolumes, err := f.app.backend.ListVolumes(ctx)
+	if err != nil {
+		log.Error("reconcile: cannot list backend volumes", "err", err)
+		return
+	}
+
+	for _, cv := range backendVolumes {
+		wg.Add(1)
+		go func(bv *storage.Volume) {
+			defer wg.Done()
+
+			dbCtx, cancel := context.WithTimeout(ctx, dbTimeout)
+			existing, loadErr := f.app.db.LoadVolume(dbCtx, bv.Name)
+			cancel()
+
+			if loadErr != nil || existing != nil {
+				return // DB error or volume already known
+			}
+
+			now := time.Now().UTC()
+			v := &storage.Volume{
+				ID:        uuid.New().String(),
+				Name:      bv.Name,
+				SizeMB:    bv.SizeMB,
+				State:     StateAvailable,
+				Backend:   f.app.backend.BackendName(),
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			dbCtx2, cancel2 := context.WithTimeout(ctx, dbTimeout)
+			defer cancel2()
+			if saveErr := f.app.db.SaveVolume(dbCtx2, v); saveErr != nil {
+				log.Error("reconcile: cannot import backend volume", "volume", bv.Name, "err", saveErr)
+			} else {
+				log.Info("reconcile: imported backend-only volume", "volume", bv.Name)
+			}
+		}(cv)
 	}
 	wg.Wait()
 }
 
-// reconcileVolume checks a single transitional volume against the backend and
-// moves it to either available or error state.
-func (f *VolumeFeature) reconcileVolume(ctx context.Context, v *storage.Volume) {
-	f.app.logger.Info("reconcile: found transitional volume",
-		"name", v.Name, "state", v.State)
+// reconcileDBVolume reconciles a single transitional DB volume against the backend.
+func (f *VolumeFeature) reconcileDBVolume(ctx context.Context, vol *storage.Volume, policy config.ReconcilePolicy) {
+	log := f.app.logger
+	log.Info("reconcile: found transitional volume", "name", vol.Name, "state", vol.State)
 
-	real, backendErr := f.app.backend.GetVolume(ctx, v.Name)
-	if backendErr != nil || real == nil {
-		// Volume not found in backend — push it to error state.
-		f.app.logger.Warn("reconcile: volume absent from backend, marking error",
-			"name", v.Name, "state", v.State)
-		f.reconcileToError(ctx, v.Name, v.State)
+	bCtx, cancel := context.WithTimeout(ctx, backendTimeout)
+	real, backendErr := f.app.backend.GetVolume(bCtx, vol.Name)
+	cancel()
+
+	if backendErr != nil {
+		// Backend unreachable — leave volume as-is.
+		log.Warn("reconcile: backend unavailable for volume", "name", vol.Name, "err", backendErr)
 		return
 	}
 
-	// Volume exists in backend — force it to available.
-	f.app.logger.Info("reconcile: volume confirmed in backend, marking available",
-		"name", v.Name, "state", v.State)
-	fresh, _ := f.app.db.LoadVolume(ctx, v.Name)
+	if real == nil {
+		// Volume absent from backend — apply DBOnly policy.
+		switch policy.DBOnly {
+		case "delete":
+			dbCtx, dbCancel := context.WithTimeout(ctx, dbTimeout)
+			defer dbCancel()
+			if delErr := f.app.db.DeleteVolume(dbCtx, vol.Name); delErr != nil {
+				log.Error("reconcile: cannot delete DB-only volume", "name", vol.Name, "err", delErr)
+			} else {
+				log.Info("reconcile: deleted DB-only volume", "name", vol.Name)
+			}
+		case "ignore":
+			log.Info("reconcile: ignoring DB-only volume", "name", vol.Name)
+		default: // "error"
+			log.Warn("reconcile: volume absent from backend, marking error", "name", vol.Name)
+			f.reconcileToError(ctx, vol.Name, vol.State)
+		}
+		return
+	}
+
+	// Volume exists in backend — align FSM to the appropriate target state.
+	var targetState string
+	switch vol.State {
+	case StateCreating, StateCreatingFailed,
+		StateAttaching, StateAttachingFailed,
+		StateDetaching, StateDetachingFailed:
+		targetState = StateAvailable
+	case StateDeleting, StateDeletingFailed:
+		// Volume still exists but we were trying to delete it — push to error.
+		targetState = StateError
+	default:
+		targetState = StateAvailable
+	}
+
+	if targetState == StateError {
+		log.Warn("reconcile: volume should be deleted but still exists, marking error",
+			"name", vol.Name, "state", vol.State)
+		f.reconcileToError(ctx, vol.Name, vol.State)
+		return
+	}
+
+	log.Info("reconcile: volume confirmed in backend, aligning state",
+		"name", vol.Name, "from", vol.State, "to", targetState)
+
+	fresh, _ := f.app.db.LoadVolume(ctx, vol.Name)
 	if fresh == nil {
 		return
 	}
-	fresh.State = StateAvailable
+	fresh.State = targetState
 	fresh.NodeID = real.NodeID
+	fresh.UpdatedAt = time.Now().UTC()
 	_ = f.app.db.UpdateVolume(ctx, fresh)
 	_ = f.app.db.SaveEvent(ctx, VolumeEvent{
 		VolumeID:  fresh.ID,
 		Event:     "reconcile",
-		FromState: v.State,
-		ToState:   StateAvailable,
+		FromState: vol.State,
+		ToState:   targetState,
 	})
 }
 
@@ -199,5 +304,5 @@ func (f *VolumeFeature) reconcileToError(ctx context.Context, name, currentState
 		_ = f.app.applyEvent(ctx, v, EventFail)
 	}
 
-	_ = currentState // suppress unused-variable lint when the compiler inlines
+	_ = currentState
 }

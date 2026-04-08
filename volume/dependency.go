@@ -29,6 +29,7 @@ type DatabaseDependency interface {
 	LoadVolume(ctx context.Context, name string) (*storage.Volume, error)
 	ListVolumes(ctx context.Context) ([]*storage.Volume, error)
 	ListVolumesByState(ctx context.Context, states ...string) ([]*storage.Volume, error)
+	DeleteVolume(ctx context.Context, name string) error
 	SaveEvent(ctx context.Context, e VolumeEvent) error
 }
 

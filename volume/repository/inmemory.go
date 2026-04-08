@@ -86,6 +86,13 @@ func (r *InMemoryRepository) ListVolumesByState(_ context.Context, states ...str
 	return out, nil
 }
 
+func (r *InMemoryRepository) DeleteVolume(_ context.Context, name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.volumes, name)
+	return nil
+}
+
 func (r *InMemoryRepository) SaveEvent(_ context.Context, e volume.VolumeEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -224,6 +224,7 @@ func (rr *ResourcesRegistry) setupVolumeFeature() error {
 			Multiplier:  rr.config.RetryPolicy.Multiplier,
 			MaxWait:     rr.config.RetryPolicy.MaxWait,
 		},
+		ReconcilePolicy: rr.config.ReconcilePolicy,
 	})
 	if err != nil {
 		return fmt.Errorf("volume feature: %w", err)

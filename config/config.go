@@ -18,6 +18,18 @@ type RetryPolicy struct {
 	MaxWait     time.Duration // VOLUME_RETRY_MAX_WAIT,     default: 10s
 }
 
+// ReconcilePolicy controls startup reconciliation behaviour when the DB and
+// Ceph are out of sync.
+type ReconcilePolicy struct {
+	// DBOnly is the action when a volume exists in DB but not in Ceph.
+	// Values: "error" (default) | "delete" | "ignore"
+	DBOnly string
+
+	// CephOnly is the action when a volume exists in Ceph but not in DB.
+	// Values: "ignore" (default) | "import"
+	CephOnly string
+}
+
 // Config holds all runtime configuration loaded from environment variables.
 type Config struct {
 	StorageBackend string
@@ -35,7 +47,8 @@ type Config struct {
 	OtelJaegerEndpoint string
 	OtelServiceName    string
 
-	RetryPolicy RetryPolicy
+	RetryPolicy     RetryPolicy
+	ReconcilePolicy ReconcilePolicy
 }
 
 // Load reads configuration from environment variables and validates it.
@@ -82,6 +95,10 @@ func Load() (*Config, error) {
 			Multiplier:  retryMultiplier,
 			MaxWait:     retryMaxWait,
 		},
+		ReconcilePolicy: ReconcilePolicy{
+			DBOnly:   getEnv("RECONCILE_DB_ONLY", "error"),
+			CephOnly: getEnv("RECONCILE_CEPH_ONLY", "ignore"),
+		},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -110,6 +127,14 @@ func (c *Config) validate() error {
 	}
 	if c.RetryPolicy.MaxWait <= 0 {
 		return fmt.Errorf("invalid VOLUME_RETRY_MAX_WAIT: must be > 0, got %s", c.RetryPolicy.MaxWait)
+	}
+	validDBOnly := map[string]bool{"error": true, "delete": true, "ignore": true}
+	if !validDBOnly[c.ReconcilePolicy.DBOnly] {
+		return fmt.Errorf("invalid RECONCILE_DB_ONLY: %q (valid: error, delete, ignore)", c.ReconcilePolicy.DBOnly)
+	}
+	validCephOnly := map[string]bool{"ignore": true, "import": true}
+	if !validCephOnly[c.ReconcilePolicy.CephOnly] {
+		return fmt.Errorf("invalid RECONCILE_CEPH_ONLY: %q (valid: ignore, import)", c.ReconcilePolicy.CephOnly)
 	}
 	return nil
 }

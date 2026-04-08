@@ -93,6 +93,14 @@ func (r *PostgresRepository) ListVolumesByState(ctx context.Context, states ...s
 	return scanVolumes(rows)
 }
 
+func (r *PostgresRepository) DeleteVolume(ctx context.Context, name string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM volumes WHERE name = $1`, name)
+	if err != nil {
+		return fmt.Errorf("delete volume: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) SaveEvent(ctx context.Context, e volume.VolumeEvent) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO volume_events (volume_id, event, from_state, to_state, created_at)

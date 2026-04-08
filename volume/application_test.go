@@ -96,6 +96,13 @@ func (d *fakeDB) ListVolumesByState(_ context.Context, states ...string) ([]*sto
 	return out, nil
 }
 
+func (d *fakeDB) DeleteVolume(_ context.Context, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.volumes, name)
+	return nil
+}
+
 func (d *fakeDB) SaveEvent(_ context.Context, e VolumeEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
