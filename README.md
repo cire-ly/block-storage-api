@@ -41,6 +41,9 @@ curl -s http://163.172.144.70:8080/healthz | jq
 | API docs | Swagger (swaggo) |
 | CI/CD | GitHub Actions → ghcr.io |
 | Deployment | Docker Compose on Scaleway DEV1-S |
+| Tailscale VPN | Ceph node connectivity (NAT traversal) |
+| cephadm | Ceph cluster deployment (Docker-based) |
+| ghcr.io | Container registry |
 
 ---
 
@@ -58,28 +61,68 @@ inspired by production Go codebases.
 
 ```
 block-storage-api/
-├── cmd/api/               # entrypoint + ResourcesRegistry (startup/shutdown)
-├── config/                # env vars + validation
-├── assertor/              # lightweight dependency validation
-├── internal/
-│   ├── db/                # shared pgx pool + golang-migrate (private)
-│   └── observability/     # OpenTelemetry setup (private)
-├── volume/                # main feature — hexagonal architecture
-│   ├── contract.go        # FeatureContract + ApplicationContract
-│   ├── dependency.go      # dependency interfaces (consumer-side)
-│   ├── application.go     # pure business logic — zero transport imports
-│   ├── factory.go         # wiring + WaitGroup shutdown
-│   ├── controller_http.go # HTTP transport only — zero business logic
-│   ├── fsm.go             # FSM states, transitions, retry policy
+├── cmd/
+│   └── api/
+│       ├── main.go              # minimal entrypoint (~20 lines)
+│       ├── setup.go             # ResourcesRegistry — Setup() + Shutdown() LIFO
+│       ├── backend_mock.go      # newBackend() — mock (//go:build !ceph)
+│       └── backend_ceph.go      # newBackend() — Ceph  (//go:build ceph)
+├── config/
+│   └── config.go                # env vars + validation + RetryPolicy + ReconcilePolicy
+├── assertor/
+│   └── assertor.go              # lightweight dependency validation
+├── internal/                    # private — not importable externally
+│   ├── db/
+│   │   ├── postgres.go          # pgxpool connection
+│   │   ├── migrate.go           # golang-migrate runner
+│   │   └── migrations/          # SQL migration files
+│   └── observability/
+│       ├── tracing.go           # OpenTelemetry tracer provider
+│       └── metrics.go           # OpenTelemetry meter provider
+├── volume/                      # main feature — hexagonal architecture
+│   ├── contract.go              # FeatureContract + ApplicationContract
+│   ├── dependency.go            # dependency interfaces (consumer-side)
+│   ├── application.go           # pure business logic — zero transport imports
+│   ├── factory.go               # wiring + WaitGroup + cancelCtx + bgCtx
+│   ├── controller_http.go       # HTTP transport only — zero business logic
+│   ├── fsm.go                   # FSM states, transitions, RetryPolicy
 │   └── repository/
-│       ├── postgres.go    # PostgreSQL impl of DatabaseDependency
-│       └── inmemory.go    # in-memory impl for tests
+│       ├── postgres.go          # PostgreSQL impl of DatabaseDependency
+│       └── inmemory.go          # in-memory impl for tests
 ├── storage/
-│   ├── backend.go         # VolumeBackend interface + Volume type
-│   ├── mock/              # in-memory backend (default, no deps)
-│   └── ceph/              # Ceph RBD via go-ceph (-tags ceph)
-└── transport/
-    └── nvmeof/            # NVMe-oF target (transport layer, not a backend)
+│   ├── backend.go               # VolumeBackend interface + Volume type
+│   ├── mock/
+│   │   ├── mock.go              # in-memory backend (default, no deps)
+│   │   └── mock_test.go
+│   └── ceph/
+│       ├── ceph.go              # Ceph RBD via go-ceph (-tags ceph)
+│       └── stub.go              # stub without -tags ceph (//go:build !ceph)
+├── transport/
+│   └── nvmeof/
+│       ├── target.go            # NVMe-oF target (transport, not a backend)
+│       └── target_test.go
+├── grafana/
+│   └── provisioning/
+│       ├── datasources/
+│       │   └── loki.yaml        # Loki datasource — auto-provisioned at startup
+│       └── dashboards/
+│           ├── dashboard.yaml   # dashboard provider config
+│           └── block-storage-api.json  # 4-panel dashboard
+├── docs/
+│   ├── docs.go                  # Swagger generated docs
+│   ├── swagger.json
+│   ├── block-storage-api-architecture.png   # infrastructure diagram
+│   └── block-storage-api-infrastructure.html # animated diagram
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml            # lint → test → build-and-push → deploy (manual)
+├── Dockerfile                   # multi-stage: golang:1.26-bookworm + debian:bookworm-slim
+├── docker-compose.yml           # API + PostgreSQL + Loki + Grafana
+├── Makefile                     # run, run-ceph, test, coverage, lint, migrate
+├── .golangci.yml                # golangci-lint v2 config
+├── CLAUDE.md                    # architecture rules for Claude Code
+├── LICENSE
+└── README.md
 ```
 
 ### Feature pattern
