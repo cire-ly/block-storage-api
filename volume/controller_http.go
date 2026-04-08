@@ -600,6 +600,7 @@ func (c *httpController) recoverer(next http.Handler) http.Handler {
 }
 
 // responseWriter captures the HTTP status code written by downstream handlers.
+// It also forwards http.Flusher so that SSE handlers can flush incrementally.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -608,4 +609,11 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Flush forwards to the underlying ResponseWriter if it implements http.Flusher.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
